@@ -111,7 +111,8 @@ Router().get/post/put/patch/delete/add("/a/:id", { ctx: Context, _: () -> Unit =
 ctx.paramOr("id", "")   ctx.requestHeader("authorization")   ctx.bodyJson(): ?JsonValue
 ctx.status(200).json(s) / .body(s) / .header(k, v)
 ctx.err(): ?Exception                    // onError 链里读
-ctx.http → h.request.remoteAddr          // 取客户端地址（本项目转成字符串后判断）
+ctx.http → h.request.remoteAddr          // 取客户端地址；⚠️ 实测文本形如 "IP:端口"（例 127.0.0.1:14764），
+                                         //    按 IP 用必须先剥端口（见 h_ops.cj 的 clientIpOf）
 app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；handle.shutdown() 优雅关闭
 ```
 
@@ -155,7 +156,8 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 | 23 | **原生命令参数里的双引号会被吃掉** | `curl -d '{"a":"b"}'` 里的引号在 PS 5.1 传参时被剥离，服务端收到非法 JSON（表现为 400）。改用 `--data-binary @临时文件` |
 | 24 | **openssl / curl 往 stderr 写日志** | 脚本若用 `$ErrorActionPreference = "Stop"`，会把「原生命令写了 stderr」当成致命错误直接中断。用 `Continue` + 显式断言 |
 | 25 | **部署包里带着私钥** | `server/dist/club-server/certs/key.pem` 与 `server/certs/key.pem` 都必须在 `.gitignore` 里；`git check-ignore -v <路径>` 自检 |
-| 26 | **局部编辑会让 `.ps1` 丢掉 BOM** | 第 11 条讲的是"新脚本要带 BOM"，这里补上更隐蔽的一半：**已经正常的脚本被局部改写后 BOM 会消失**（多数工具默认写无 BOM 的 UTF-8）。下一次运行时整个文件按 ANSI 解析，中文变乱码，报出 `意外的标记"build\smoke-data"`、`表达式或语句中包含意外的标记` 这类**看起来像手写语法错误**的解析失败——很容易误判成"脚本改坏了"。判定：`[System.IO.File]::ReadAllBytes($p)[0..2]` 是否为 `EF BB BF`。改完 `.ps1` 必须确认 BOM 仍在 |
+| 26 | **局部编辑会让 `.ps1` 丢掉 BOM** | 第 11 条讲的是"新脚本要带 BOM"，这里补上更隐蔽的一半：**已经正常的脚本被局部改写后 BOM 会消失**（多数工具默认写无 BOM 的 UTF-8）。下一次运行时整个文件按 ANSI 解析，中文变乱码，报出 `意外的标记"build\smoke-data"`、`表达式或语句中包含意外的标记` 这类**看起来像手写语法错误**的解析失败——很容易误判成"脚本改坏了"。判定：`[System.IO.File]::ReadAllBytes($p)[0..2]` 是否为 `EF BB BF`。改完 `.ps1` 必须确认 BOM 仍在。**2026-09-14 实测补充**：用**文件编辑工具**（不是 shell）对 `smoke.ps1` 做局部编辑，BOM **同样会丢**（编辑前 `EF BB BF`、编辑后没有），已手动补回 —— 所以"只要不用 shell 处理就没事"是错的，**任何局部编辑之后都要查一遍** |
+| 27 | **不要用 PowerShell 双引号字符串处理 `.md` / `.cj` / `.ps1` 的内容** | 双引号里反引号是转义引导符：反引号 + `r` → CR、+ `a` → BEL、+ `t` → TAB、+ `n` → LF。markdown 里的代码跨度（如 `` `restore-member` ``、`` `router.middleware()` ``）**正好全部命中**，于是反引号与首字母被静默吃掉，行被拆断或塞进不可见控制字符——本次真把 `docs/code-review.md` 写坏（2 个裸 BEL 字节 + 3 行残缺重复片段）。改用文件编辑工具，或用**单引号**字符串（单引号里反引号不是转义符）。改完自检非法控制字符（脚本见 `docs/code-review.md` 的 N-2 条） |
 
 ---
 
