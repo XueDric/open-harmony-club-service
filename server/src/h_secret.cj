@@ -14,8 +14,17 @@ import stdx.encoding.json.*
 
 /*
  * POST /api/v1/members/{id}/reset-password
- * 权限：会长 / 副会长（任意成员）、部长 / 副部长（本部门）、本人
- * 返回一次性临时密码，之后不可再查；被重置者全部令牌立即失效。
+ *
+ * 权限：会长 / 副会长（任意成员）、部长 / 副部长（本部门内档位低于自己的成员），
+ * 以及**不能**对自己用——本人改密走 PUT /auth/password（需原密码）。
+ *
+ * L-4 口径澄清：api-design §3.8 汇总表与 v1-scope §3.4.3 曾把本接口写成"仅本人可用"，
+ * 与 §3.5 / §6.1 的"会长重置成员密码"自相矛盾。已统一为**管理员操作**：
+ *   · 本接口是"忘记密码"的唯一出路，它签发一次性临时密码，属于管理员救济动作；
+ *   · 「本人可用」的语义由 PUT /auth/password 承担（要验原密码，更安全）；
+ *   · 因此 scopeAllows 里那条 `case ResetPassword => return true` 的死代码已删除
+ *     （角色维度从不给 member 放行 ResetPassword，那条分支永远到不了）。
+ * 两处文档已同步，tests 里也钉了一条"成员对自己重置 -> 403"。
  */
 public func handleResetPassword(ctx: Context, s: Store): Unit {
     let actor = requireActive(ctx, s)
@@ -68,7 +77,10 @@ public func handleRegisterConfigPut(ctx: Context, s: Store): Unit {
     let v = V()
     let code = v.need("code", reqStrOr(body, "code", ""), "请输入新的注册口令")
     if (code.size > 0) {
-        v.check("code", code.size >= 4, "注册口令至少 4 位")
+        /* M-2：下限从 4 提到 6。注册口令是**全社团共用**、只需猜中一次就拿到账号的
+         * 单一秘密，4 位字符（尤其纯数字）在线爆破是分钟级的事。6 位是成本与
+         * 可传播性（要在群里发）之间的折中，同时配合 handleRegister 的失败限流。 */
+        v.check("code", code.size >= 6, "注册口令至少 6 位")
         v.check("code", code.size <= 32, "注册口令最多 32 位")
     }
     v.done()

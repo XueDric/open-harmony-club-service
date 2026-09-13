@@ -283,12 +283,23 @@ public func handleMemberAssign(ctx: Context, s: Store): Unit {
         if (tgt.role == "president" && presidentCount(s) <= 1) {
             throw apiErr("FORBIDDEN_LAST_PRESIDENT")
         }
+        /* M-4：assign 同时承担"审批待分配"和"恢复已退出成员"两件事。
+         * 文档（api-design §3.2）写明移出社团是**保留数据、日后可恢复**，
+         * 所以这里不拒绝 disabled 目标；但绝不能让它**静默**发生——
+         * 审计里必须能一眼看出这次是"复活"而不是普通分配，
+         * 否则事后追查"这个人是怎么回来的"会查不出来。 */
+        let wasDisabled = (tgt.status == "disabled")
         tgt.dept_id = deptId
         tgt.role = role
         tgt.status = "active"
         tgt.dept_hint = 0
         storeSave(s)
-        audit(s, actor.id, "assign-member", tgt.id, "部门=${deptId} 角色=${role}")
+        if (wasDisabled) {
+            audit(s, actor.id, "restore-member", tgt.id,
+                "恢复已退出成员：部门=${deptId} 角色=${role}（恢复与分配同用 assign，此处按恢复记账）")
+        } else {
+            audit(s, actor.id, "assign-member", tgt.id, "部门=${deptId} 角色=${role}")
+        }
         sendOk(ctx, memberBrief(s, tgt))
     } finally {
         s.lock.unlock()
@@ -332,6 +343,7 @@ public func handleMemberAssignBatch(ctx: Context, s: Store): Unit {
         }
         let ok = JsonArray()
         let bad = JsonArray()
+        var restored: Int64 = 0
         var i: Int64 = 0
         while (i < ids.size()) {
             let cell = ids.get(i)
@@ -353,6 +365,10 @@ public func handleMemberAssignBatch(ctx: Context, s: Store): Unit {
                             if (tgt.role == "president" && presidentCount(s) <= 1) {
                                 addFail(bad, id, "FORBIDDEN_LAST_PRESIDENT")
                             } else {
+                                /* M-4：批量路径同样可能复活已退出成员，单独计数并单独记账 */
+                                if (tgt.status == "disabled") {
+                                    restored += 1
+                                }
                                 tgt.dept_id = deptId
                                 tgt.role = role
                                 tgt.status = "active"
@@ -365,7 +381,8 @@ public func handleMemberAssignBatch(ctx: Context, s: Store): Unit {
             }
         }
         storeSave(s)
-        audit(s, actor.id, "assign-batch", deptId, "成功=${ok.size()} 失败=${bad.size()} 角色=${role}")
+        audit(s, actor.id, "assign-batch", deptId,
+            "成功=${ok.size()} 失败=${bad.size()} 角色=${role} 其中恢复已退出成员=${restored}")
         let data = JsonObject()
         data.put("succeeded", ok)
         data.put("failed", bad)

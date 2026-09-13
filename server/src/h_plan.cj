@@ -157,12 +157,15 @@ public func handlePlanCreate(ctx: Context, s: Store): Unit {
     try {
         let now = nowEpoch()
         if (clientToken.size > 0) {
-            match (idemHit(s, "plan", clientToken, now)) {
+            match (idemHit(s, "plan", actor.id, clientToken, now)) {
                 case Some(rid) =>
                     match (s.plans.get(rid)) {
                         case Some(existing) =>
+                            /* 命中也要按本次操作者重判一次读权限（P0 H-2），
+                             * 与 handleTaskCreate 同样的防御纵深。 */
+                            requireAccess(actor, Action.ViewTasks, targetOfPlan(s, existing))
                             let data = JsonObject()
-                            jPutObj(data, "plan", planDetailView(s, existing, None))
+                            jPutObj(data, "plan", planDetailView(s, existing, planStatsOf(s, existing.id)))
                             jPutBool(data, "duplicated", true)
                             sendOk(ctx, data)
                             return
@@ -229,12 +232,13 @@ public func handlePlanCreate(ctx: Context, s: Store): Unit {
         p.updated_at = now
         s.plans[p.id] = p
         if (clientToken.size > 0) {
-            idemPut(s, "plan", clientToken, p.id, now)
+            idemPut(s, "plan", actor.id, clientToken, p.id, now)
         }
         storeSave(s)
 
         let data = JsonObject()
-        jPutObj(data, "plan", planDetailView(s, p, None))
+        /* 新建成功后立即回读真实聚合进度（P1 M-1），不要给 0/0 的假值 */
+        jPutObj(data, "plan", planDetailView(s, p, planStatsOf(s, p.id)))
         sendCreated(ctx, data)
     } finally {
         s.lock.unlock()
@@ -286,8 +290,12 @@ public func handlePlanUpdate(ctx: Context, s: Store): Unit {
                 }
                 match (s.members.get(oid)) {
                     case Some(m) =>
-                        if (m.status != "active") {
+                        /* L-8：与 h_task.cj 一致，pending / disabled 分开报 */
+                        if (m.status == "pending") {
                             throw apiErr("MEMBER_PENDING")
+                        }
+                        if (m.status == "disabled") {
+                            throw apiErr("MEMBER_DISABLED")
                         }
                     case None => throw apiErr("MEMBER_NOT_FOUND")
                 }
@@ -303,9 +311,10 @@ public func handlePlanUpdate(ctx: Context, s: Store): Unit {
             p.updated_at = nowEpoch()
             storeSave(s)
         }
-        /* 与 POST /plans、GET /plans/{id} 保持一致：对象包在 data.plan 下 */
+        /* 与 POST /plans、GET /plans/{id} 保持一致：对象包在 data.plan 下；
+         * progress 必须是真实聚合值（P1 M-1），否则改一次标题进度条就归零 */
         let data = JsonObject()
-        jPutObj(data, "plan", planDetailView(s, p, None))
+        jPutObj(data, "plan", planDetailView(s, p, planStatsOf(s, p.id)))
         sendOk(ctx, data)
     } finally {
         s.lock.unlock()
@@ -387,6 +396,17 @@ public func handlePlanMove(ctx: Context, s: Store): Unit {
             match (s.departments.get(d)) {
                 case Some(_) => ()
                 case None => throw apiErr("DEPT_NOT_FOUND")
+            }
+            /* P0 H-3：上面那次 requireAccess 判的是**原部门**。提升为顶层时若带了
+             * dept_id，目标部门是本次操作真正落地的位置，必须再判一次；
+             * 否则部长可以把自己部门的课题「提升」到别的部门去。
+             * 跨部门同样按 v1 决策 3 拒绝（与换父节点分支保持一致）。 */
+            let tgt3 = Target()
+            tgt3.dept_id = d
+            tgt3.owner_id = p.owner_id
+            requireAccess(actor, Action.MovePlan, tgt3)
+            if (d != curDept) {
+                throw apiErrMsg("VALIDATION_FAILED", "v1 不允许跨部门移动课题（部门由根课题决定）")
             }
             p.parent_id = 0
             p.dept_id = d

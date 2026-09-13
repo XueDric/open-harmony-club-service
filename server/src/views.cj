@@ -68,7 +68,16 @@ public func permissionsOf(m: Member): JsonObject {
     }
     jPutStr(p, "view_scope", scope)
     jPutBool(p, "manage_members", global)
-    jPutBool(p, "set_role", active && m.role == "president")
+    /*
+     * set_role 必须**从 can() 推出来**，不能手写角色判断（L-1）。
+     * 原先写的是 `m.role == "president"`，但真实权限是「会长与副会长都能改角色
+     * （副会长除外会长本人）」——客户端据此把副会长的角色下拉框整个藏掉了，
+     * 而后端其实允许。探针目标取本部门的一个普通成员，这正是"能不能改别人角色"。
+     */
+    let probe = Target()
+    probe.dept_id = m.dept_id
+    probe.target_role = "member"
+    jPutBool(p, "set_role", active && can(m, Action.SetRole, probe))
     jPutBool(p, "create_plan", global || deptAdmin)
     jPutBool(p, "create_task", global || deptAdmin)
     jPutBool(p, "update_any_task", global || deptAdmin)
@@ -238,12 +247,16 @@ public func planRefObj(p: Plan): JsonObject {
  * 任务所属课题的面包屑：从顶层到本级。
  * 带 guard，避免数据异常（环形）时死循环——环形校验在 M4 的移动接口上，
  * 但**读取路径不能假设数据一定干净**。
+ *
+ * L-10：这里的上限原先写死 32，而"合法深度上限"在 store.cj 里另有定义
+ * （PLAN_MAX_DEPTH = 6，遍历保护的宽松上限是 PLAN_WALK_GUARD = 64）。
+ * 两处不一致，将来调深度的上限时很容易只改一处。统一引用同一个常量。
  */
 public func planPath(s: Store, planId: Int64): JsonArray {
     let chain = ArrayList<Plan>()
     var cur = planId
     var guard: Int64 = 0
-    while (cur > 0 && guard < 32) {
+    while (cur > 0 && guard < PLAN_WALK_GUARD) {
         match (s.plans.get(cur)) {
             case Some(p) =>
                 chain.add(p)

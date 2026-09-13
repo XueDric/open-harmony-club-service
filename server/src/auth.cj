@@ -86,7 +86,8 @@ public func verifyPw(pw: String, saltHex: String, hashHex: String, iters: Int64)
         return false
     }
     let dk = pbkdf2Sha256(pw.toArray(), salt, iters, 32)
-    return toHexString(dk) == hashHex
+    /* 定时安全比较（L-6）：摘要比对也不该在第一个不同字节就返回 */
+    return constantTimeEq(toHexString(dk), hashHex)
 }
 
 /* ===================== 令牌 ===================== */

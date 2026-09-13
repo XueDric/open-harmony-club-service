@@ -15,10 +15,62 @@ package qingzhou
 import std.collection.*
 import stdx.encoding.json.*
 
-/* 链接落地页地址。用请求的 Host 头拼，避免把域名写死进配置。 */
+/*
+ * 链接落地页地址。用请求的 Host 头拼，避免把域名写死进配置。
+ *
+ * L-2 已知取舍：接口文档里这个 URL 是要发到群里的"落地页"，但原先**没有 /join/{token}
+ * 这个路由**，点开就是 404；而且 Host 头是调用方可控的，响应里的 url 会被污染
+ * （只在调用方自己的响应里，不落盘、不影响他人，所以定为低危）。
+ * 现在补上了落地页（handleJoinLanding），Host 头的问题保留并记录：
+ * 真正上线时应改为配置项（服务端已知自己的公网地址）。
+ */
 func linkUrl(ctx: Context, token: String): String {
     let host = ctx.requestHeader("host") ?? "localhost"
     return "https://${host}/join/${token}"
+}
+
+/*
+ * GET /join/{token} —— 招募链接的落地页（无需登录，L-2）。
+ *
+ * 客户端是 HarmonyOS 应用，浏览器打开链接无法直接唤起 App（v1 不做 deep link 配置），
+ * 因此这里给一个**最小可用**的说明页：告诉用户链接属于哪个部门、下一步该做什么。
+ * 只暴露部门名——那本来就是链接持有者能看到的信息，不含任何口令、成员或任务数据。
+ */
+public func handleJoinLanding(ctx: Context, s: Store): Unit {
+    let token = ctx.paramOr("token", "")
+    var deptName = ""
+    s.lock.lock()
+    try {
+        match (s.invite_links.get(token)) {
+            case Some(l) =>
+                if (l.enabled) {
+                    match (s.departments.get(l.dept_id)) {
+                        case Some(d) => deptName = d.name
+                        case None => deptName = ""
+                    }
+                }
+            case None => ()
+        }
+    } finally {
+        s.lock.unlock()
+    }
+    let html = if (deptName.size > 0) {
+        joinPageHtml("加入「${deptName}」", "请在社团管理 App 内注册，并向管理员索取注册口令。")
+    } else {
+        joinPageHtml("链接已失效", "这个招募链接已被停用或不存在，请向管理员索取新的链接。")
+    }
+    ctx.header("content-type", "text/html; charset=utf-8").status(200).body(html)
+}
+
+/* 落地页 HTML：不用模板引擎，也不引入任何外部资源（离线可看）。 */
+func joinPageHtml(title: String, tip: String): String {
+    return "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">" +
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
+        "<title>${title}</title></head>" +
+        "<body style=\"font-family:sans-serif;padding:2rem;line-height:1.8;color:#222\">" +
+        "<h2>${title}</h2><p>${tip}</p>" +
+        "<p style=\"color:#888;font-size:.9rem\">社团管理工具</p>" +
+        "</body></html>"
 }
 
 /* 生成不与现有链接冲突的 token（8 个十六进制字符，够短好念）。 */
@@ -117,10 +169,24 @@ public func handleInviteLinkDisable(ctx: Context, s: Store): Unit {
                 audit(s, actor.id, "disable-invite-link", l.dept_id, "token=${token}")
                 sendOk(ctx, inviteLinkView(s, l, linkUrl(ctx, token)))
             case None =>
-                /* 幂等：不存在也返回成功 */
-                sendOk(ctx, JsonObject())
+                /* 幂等：不存在也返回成功。
+                 * L-3：响应形状必须与存在时一致——原先返回空对象 {}，
+                 * 客户端读 data.link.enabled 会拿到 null，得写一个"有没有 data.link"的特例。
+                 * 这里给同一个视图，字段齐全、enabled 恒为 false。 */
+                sendOk(ctx, inviteLinkView(s, goneLink(token), linkUrl(ctx, token)))
         }
     } finally {
         s.lock.unlock()
     }
+}
+
+/* 为"已不存在"的链接造一个同形状的替身：token 原样回显、enabled=false、其余为空。 */
+func goneLink(token: String): DeptInviteLink {
+    let l = DeptInviteLink()
+    l.token = token
+    l.dept_id = 0
+    l.enabled = false
+    l.created_by = 0
+    l.created_at = 0
+    return l
 }

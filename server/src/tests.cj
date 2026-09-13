@@ -77,6 +77,18 @@ func testTime(t: TR): Unit {
     t.ok("parseIso(乱)=None", parseIso("不是时间").isNone())
     t.ok("parseIso(月越界)=None", parseIso("2026-13-01T00:00:00+08:00").isNone())
 
+    /* P1 M-6：ArkTS/JS 的 toISOString() 带毫秒，必须收 */
+    t.eqi("parseIso(小数秒 .307Z)", parseIso("2026-09-20T10:00:00.307Z") ?? -1, 1789898400)
+    t.eqi("parseIso(小数秒 +08:00)", parseIso("2026-09-20T18:00:00.5+08:00") ?? -1, 1789898400)
+    t.eqi("parseIso(小数秒 无偏移)", parseIso("2026-09-20T18:00:00.123456") ?? -1, 1789898400)
+    t.ok("parseIso(只有点没数字)=None", parseIso("2026-09-20T18:00:00.Z").isNone())
+    /* P2 L-5：历法上不存在的日期必须拒绝，不能静默顺延 */
+    t.ok("parseIso(2月30日)=None", parseIso("2026-02-30T00:00:00+08:00").isNone())
+    t.ok("parseIso(平年2月29日)=None", parseIso("2026-02-29T00:00:00+08:00").isNone())
+    t.eqi("parseIso(闰年2月29日) 有效", parseIso("2024-02-29T12:00:00+08:00") ?? -1, 1709179200)
+    t.ok("parseIso(4月31日)=None", parseIso("2026-04-31T00:00:00+08:00").isNone())
+    t.ok("parseIso(0日)=None", parseIso("2026-04-00T00:00:00+08:00").isNone())
+
     t.eqi("startOfLocalDay", startOfLocalDay(1789898400), 1789833600)
     t.eqi("startOfLocalDay(0)", startOfLocalDay(0), -28800)
 
@@ -116,6 +128,16 @@ func testStr(t: TR): Unit {
     t.ok("phone 首位", !isPhone("23800000000"))
     t.ok("phone 非数字", !isPhone("1380000000a"))
     t.ok("phone 空", !isPhone(""))
+
+    /* L-6：定时安全比较 —— 语义必须与 == 一致，且长度不同也不能误判为相等 */
+    t.ok("constantTimeEq 相等", constantTimeEq("ABC123", "ABC123"))
+    t.ok("constantTimeEq 末位不同", !constantTimeEq("ABC123", "ABC124"))
+    t.ok("constantTimeEq 首位不同", !constantTimeEq("ABC123", "XBC123"))
+    t.ok("constantTimeEq 长度不同", !constantTimeEq("ABC123", "ABC1234"))
+    t.ok("constantTimeEq 空串相等", constantTimeEq("", ""))
+    t.ok("constantTimeEq 空与非空", !constantTimeEq("", "a"))
+    t.ok("constantTimeEq 中文", constantTimeEq("社团口令", "社团口令"))
+    t.ok("constantTimeEq 中文不同", !constantTimeEq("社团口令", "社团口另"))
 }
 
 /* ===================== 随机 ===================== */
@@ -290,8 +312,40 @@ func testStore(t: TR): Unit {
     }
     t.ok("坏库必须报错", threw)
 
+    /*
+     * P1 M-7：**单条记录**坏掉也必须报错。
+     * 原先每个元素的解析异常都被 catch 吞掉：文件里 2 个部门坏 1 个，
+     * 服务照常启动，用户看到 1 个；下一次保存就把那 1 条永久覆盖。
+     * 这里手写一个"数组里混了一个字符串"的库，要求 storeLoad 直接拒绝启动。
+     */
+    let good = storeLoad(dir + "-m7")
+    storeSave(good) /* 先建出目录，再用坏内容覆盖 db.json */
+    let badJson = "{\"version\":1,\"departments\":[\"这不是一个部门对象\",{\"id\":1,\"name\":\"课题部\",\"sort\":0}],\"members\":[]}"
+    File.writeTo(good.dbFile(), badJson.toArray())
+    var threw2 = false
+    try {
+        storeLoad(dir + "-m7")
+    } catch (e: Exception) {
+        threw2 = true
+    }
+    t.ok("单条坏记录必须报错（M-7）", threw2)
+
+    /* P1 M-3：限流状态不落盘 —— 保存后 db.json 里不应出现 login_fail */
+    let lf = LoginFail()
+    lf.count = 3
+    lf.first_at = 1789898400
+    s.login_fail["13800000000"] = lf
+    storeSave(s)
+    let after = String.fromUtf8(File.readFrom(s.dbFile()))
+    t.ok("login_fail 不落盘（M-3）", !containsAscii(after, "login_fail"))
+    /* 但内存里仍然有效（限流照常工作） */
+    t.ok("login_fail 仍在内存", s.login_fail.size == 1)
+
     if (exists(dir)) {
         remove(dir, recursive: true)
+    }
+    if (exists(dir + "-m7")) {
+        remove(dir + "-m7", recursive: true)
     }
 }
 
@@ -320,8 +374,15 @@ func testPerms(t: TR): Unit {
 
     let own = Target()
     own.dept_id = 2
+    /* 目标档位：自己的部门里的一个普通成员。
+     * 必须显式填 —— H-1 之后「档位」是权限判定的一部分，
+     * target_role 留空会按"目标档位未知"一律拒绝。 */
+    own.member_id = 9
+    own.target_role = "member"
     let other = Target()
     other.dept_id = 3
+    other.member_id = 90
+    other.target_role = "member"
     let presTarget = Target()
     presTarget.member_id = 1
     presTarget.target_role = "president"
@@ -368,6 +429,47 @@ func testPerms(t: TR): Unit {
     t.ok("部长改外部门成员姓名 拒", !can(lead, Action.EditMemberName, other))
     t.ok("部长建课题", can(lead, Action.CreatePlan, own))
     t.ok("部长移动课题", can(lead, Action.MovePlan, own))
+
+    /*
+     * P0 H-1：档位规则。上面第 372 行只测了「副会长不能改会长本人」，
+     * 而漏洞出在**部长**分支——部长拿到同部门的会长目标时畅通无阻。
+     * 注意这里的目标刻意取**同部门**（dept 2 = 部长自己那个部门），
+     * 否则 403 会是 FORBIDDEN_NOT_IN_DEPT 挡下来的，测了个假绿灯。
+     */
+    let sameDeptPres = Target()
+    sameDeptPres.member_id = 1
+    sameDeptPres.target_role = "president"
+    sameDeptPres.dept_id = 2
+    let sameDeptVp = Target()
+    sameDeptVp.member_id = 2
+    sameDeptVp.target_role = "vice_president"
+    sameDeptVp.dept_id = 2
+    let sameDeptLead = Target()
+    sameDeptLead.member_id = 5
+    sameDeptLead.target_role = "lead"
+    sameDeptLead.dept_id = 2
+    let sameDeptMember = Target()
+    sameDeptMember.member_id = 9
+    sameDeptMember.target_role = "member"
+    sameDeptMember.dept_id = 2
+
+    t.ok("部长改同部门会长姓名 拒（H-1）", !can(lead, Action.EditMemberName, sameDeptPres))
+    t.ok("部长重置同部门会长密码 拒（H-1）", !can(lead, Action.ResetPassword, sameDeptPres))
+    t.eqs("部长动会长的错误码是角色维度（H-1）",
+        checkAccess(lead, Action.ResetPassword, sameDeptPres) ?? "", "FORBIDDEN_ROLE")
+    t.ok("副部长同样改不了会长本人（H-1）", !can(vice, Action.EditMemberName, sameDeptPres))
+    t.ok("部长改同部门副会长姓名 拒（H-1）", !can(lead, Action.EditMemberName, sameDeptVp))
+    t.ok("部长重置同部门副会长密码 拒（H-1）", !can(lead, Action.ResetPassword, sameDeptVp))
+    t.ok("部长改同部门另一位部长姓名 拒（同档）", !can(lead, Action.EditMemberName, sameDeptLead))
+    t.ok("部长改同部门普通成员姓名 允许", can(lead, Action.EditMemberName, sameDeptMember))
+    t.ok("部长重置同部门普通成员密码 允许", can(lead, Action.ResetPassword, sameDeptMember))
+    t.ok("副会长改会长本人仍拒", !can(vp, Action.EditMemberName, sameDeptPres))
+    t.ok("副会长可改另一位副会长", can(vp, Action.SetRole, sameDeptVp))
+    t.ok("会长不受档位限制", can(pres, Action.ResetPassword, sameDeptPres))
+    /* 目标档位未知时宁拒不放过 */
+    let unknownRole = Target()
+    unknownRole.dept_id = 2
+    t.ok("目标档位未知 拒（防漏填 target_role）", !can(lead, Action.ResetPassword, unknownRole))
 
     /* 成员 */
     t.ok("成员看名录（全社团）", can(mem, Action.ViewMembers, other))
@@ -443,6 +545,16 @@ func testViews(t: TR): Unit {
     let pres = mkMember(1, "president", 1)
     t.eqs("president view_scope", jsonGetStr(permissionsOf(pres), "view_scope") ?? "", "all")
     t.ok("president 能设角色", (jsonGetBool(permissionsOf(pres), "set_role") ?? false))
+
+    /*
+     * L-1：set_role 必须与真实权限一致。副会长**能**改他人角色（只有会长本人动不了），
+     * 原先 permissionsOf 写死 role == "president"，客户端据此把副会长的角色入口藏了。
+     */
+    let vpView = mkMember(2, "vice_president", 1)
+    t.ok("vice_president 能设角色（L-1）", (jsonGetBool(permissionsOf(vpView), "set_role") ?? false))
+    t.ok("vice_president manage_members", (jsonGetBool(permissionsOf(vpView), "manage_members") ?? false))
+    let viceView = mkMember(8, "vice_lead", 2)
+    t.ok("vice_lead 不能设角色", (jsonGetBool(permissionsOf(viceView), "set_role") ?? true) == false)
 
     let mem = mkMember(9, "member", 2)
     t.eqs("member view_scope", jsonGetStr(permissionsOf(mem), "view_scope") ?? "", "dept")
@@ -536,6 +648,22 @@ func testPart3Views(t: TR): Unit {
     let ds = sortedDepartments(s)
     t.eqi("部门数", ds.size, 2)
     t.eqs("按 sort 排序", ds[0].name, "主席团")
+
+    /*
+     * P1 M-8：排序键必须对越界 sort 免疫。
+     * 磁盘上可能已经有旧版本写下的超大 sort（那时接口不校验），
+     * `sort * 1000000 + id` 会溢出成一个大负数，让排序结果颠倒甚至继续破坏后续逻辑。
+     * 这里直接塞一个 Int64 最大值，要求函数不抛异常、结果仍确定。
+     */
+    let huge = Department()
+    huge.id = 3
+    huge.name = "越界部门"
+    huge.sort = 9223372036854775807
+    s.departments[3] = huge
+    let ds2 = sortedDepartments(s)
+    t.eqi("越界 sort 不丢部门", ds2.size, 3)
+    t.ok("越界 sort 仍能排序（不抛异常）", ds2[0].name == "主席团")
+    s.departments.remove(3)
 
     /* 成员排序：部门 sort → id（未分配部门排最后） */
     let picked = ArrayList<Member>()
@@ -777,13 +905,17 @@ func testTasks(t: TR): Unit {
     t.ok("detail 含 completed_at", containsAscii(detail, "completed_at"))
 
     /* 幂等表 */
-    idemPut(s, "task", "tok-1", 42, now)
-    let hit1 = idemHit(s, "task", "tok-1", now + 100)
+    idemPut(s, "task", 7, "tok-1", 42, now)
+    let hit1 = idemHit(s, "task", 7, "tok-1", now + 100)
     t.ok("24h 内命中", hit1.isSome())
     t.eqi("命中的是首次创建的资源", hit1 ?? -1, 42)
-    t.ok("不同 kind 不串", idemHit(s, "plan", "tok-1", now + 100).isNone())
-    t.ok("超过 24h 失效", idemHit(s, "task", "tok-1", now + 86401).isNone())
-    t.ok("失效后被清理", !s.idem.contains("task:tok-1"))
+    t.ok("不同 kind 不串", idemHit(s, "plan", 7, "tok-1", now + 100).isNone())
+    t.ok("超过 24h 失效", idemHit(s, "task", 7, "tok-1", now + 86401).isNone())
+    t.ok("失效后被清理", !s.idem.contains("task:7:tok-1"))
+    /* P0 H-2：幂等键必须按提交者隔离，否则乙拿甲的 client_token 重放就能读到甲的资源 */
+    idemPut(s, "task", 7, "tok-shared", 42, now)
+    t.ok("同一 token 换个人不命中（H-2）", idemHit(s, "task", 8, "tok-shared", now + 10).isNone())
+    t.ok("本人重放仍然命中", idemHit(s, "task", 7, "tok-shared", now + 10).isSome())
 }
 
 /* ===================== Part 5 的课题 ===================== */

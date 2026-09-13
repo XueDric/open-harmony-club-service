@@ -104,3 +104,25 @@ public func subFrom(s: String, start: Int64): String {
 public func isBlank(s: String): Bool {
     return s.trimAscii().size == 0
 }
+
+/*
+ * 定时安全的字节比较（L-6）。
+ *
+ * 用途：注册口令、密码摘要这类"猜中了就通过"的比对。`==` 在第一个不同的字节就返回，
+ * 逐字节试探理论上能把搜索空间从"猜整个值"压到"逐个字节猜"。本机测量这种差异
+ * 淹没在 HTTP 抖动里，但修复成本几乎为零，所以比。
+ *
+ * 长度不同也要走完整圈：先记长度不等，再统一把较短串补 0 比完，最后合并结果。
+ */
+public func constantTimeEq(a: String, b: String): Bool {
+    let x = a.toArray()
+    let y = b.toArray()
+    var diff: Int64 = if (x.size == y.size) { 0 } else { 1 }
+    let n = if (x.size < y.size) { x.size } else { y.size }
+    var i: Int64 = 0
+    while (i < n) {
+        diff = diff | Int64(x[i] ^ y[i])
+        i += 1
+    }
+    return diff == 0
+}

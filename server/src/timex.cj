@@ -148,14 +148,44 @@ func numAt(b: Array<UInt8>, pos: Int64, len: Int64): Int64 {
     return v
 }
 
+/* 公历闰年判定。 */
+func isLeapYear(y: Int64): Bool {
+    if (y % 4 != 0) {
+        return false
+    }
+    if (y % 100 != 0) {
+        return true
+    }
+    return y % 400 == 0
+}
+
+/* 某年某月的天数（1..12）。 */
+func daysInMonth(y: Int64, m: Int64): Int64 {
+    if (m == 2) {
+        if (isLeapYear(y)) {
+            return 29
+        }
+        return 28
+    }
+    if (m == 4 || m == 6 || m == 9 || m == 11) {
+        return 30
+    }
+    return 31
+}
+
 /*
  * 解析 ISO 8601。接受：
  *   2026-09-20T18:00:00+08:00   （标准形态，客户端发这个）
+ *   2026-09-20T18:00:00.307Z    （小数秒，见下）
  *   2026-09-20T18:00:00Z
  *   2026-09-20T18:00:00        （无偏移，按 +08:00 解释）
  *   2026-09-20 18:00:00        （空格分隔）
  *   2026-09-20                 （当日 00:00:00 本地）
  * 其余一律 None（调用方转 VALIDATION_FAILED）。
+ *
+ * 小数秒（P1 M-6）：ArkTS / JS 的 `new Date().toISOString()` 产出
+ * `2026-09-14T15:24:08.307Z`——带三位毫秒。真实客户端只要用标准库取"现在"，
+ * 第一天就会撞上 400。本工具的时间粒度到秒，因此小数部分**只校验形状、直接丢弃**。
  */
 public func parseIso(s: String): ?Int64 {
     let b = s.toArray()
@@ -196,6 +226,19 @@ public func parseIso(s: String): ?Int64 {
         pos = 19
     }
 
+    /* 小数秒：'.' 后跟至少一位数字，数字全部吃掉后丢弃（见函数头注释）。 */
+    if (pos < b.size && b[pos] == 46) {
+        pos += 1
+        var digits: Int64 = 0
+        while (pos < b.size && b[pos] >= 48 && b[pos] <= 57) {
+            pos += 1
+            digits += 1
+        }
+        if (digits == 0) {
+            return None
+        }
+    }
+
     var off: Int64 = TZ_OFFSET
     if (pos < b.size) {
         let c = b[pos]
@@ -223,7 +266,12 @@ public func parseIso(s: String): ?Int64 {
     if (pos != b.size) {
         return None
     }
-    if (mo < 1 || mo > 12 || d < 1 || d > 31) {
+    if (mo < 1 || mo > 12 || d < 1) {
+        return None
+    }
+    /* L-5：原先只挡 d > 31，于是 2026-02-31 会被静默顺延成 3 月 3 日——
+     * 用户填错日期，系统不吭声地替他把意思改了。历法上不存在的日期一律拒绝。 */
+    if (d > daysInMonth(y, mo)) {
         return None
     }
     if (hh > 23 || mi > 59 || ss > 60) {

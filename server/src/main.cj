@@ -163,6 +163,10 @@ func buildApp(s: Store, box: HandleBox): QingZhouApp {
         .post("/admin/shutdown", { ctx: Context, _: () -> Unit =>
             handleShutdown(ctx, box)
         })
+        /* 招募链接落地页（无需登录，L-2）。链接是发到群里的，点开必须有内容。 */
+        .get("/join/:token", { ctx: Context, _: () -> Unit =>
+            handleJoinLanding(ctx, s)
+        })
         /* Part 2 · 认证与注册 */
         .post("/api/v1/auth/register", { ctx: Context, _: () -> Unit =>
             handleRegister(ctx, s)
@@ -299,13 +303,25 @@ func buildApp(s: Store, box: HandleBox): QingZhouApp {
         }
     }
 
+    /*
+     * 中间件顺序说明（P1 M-5）：timeout 原先写在 router.middleware() **之后**，
+     * 那是错的位置。轻舟的 use() 按注册顺序串成洋葱，先注册的在**外层**；
+     * 而 router 命中路由后是直接 `h(ctx, next)` 调用 handler，我们的 handler 从不调 next()，
+     * 因此排在 router 后面的 timeout 中间件**一次都没有被执行过**——
+     * 它既没计时，也没机会发 408。
+     * 移到 router 之前（外层）才会真正参与：dispatch 前后各计一次时。
+     *
+     * 即便如此也要说清楚它的能力边界（读 timeout.cj 的实现）：它是"事后软超时"，
+     * 只能在 handler 返回后判断是否超时，**无法中断**已经跑起来的同步 handler。
+     * 真正的防线是 handler 里不做慢操作；这一层是给将来不留神写出的慢路径兜底。
+     */
     return QingZhouApp()
         .use(requestId())
         .use(logger())
         .use(bodyParser())
         .use(cors())
-        .use(router.middleware())
         .use(timeout(15000))
+        .use(router.middleware())
         .onError(errHandler)
 }
 

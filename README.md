@@ -6,7 +6,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 客户端 | 鸿蒙 App（仓颉）—— 见 `entry/`、`AppScope/` |
+| 客户端 | 鸿蒙 App（仓颉）—— 见 `entry/`、`AppScope/`。**注意：本仓库里的客户端目前仍只是 DevEco 初始模板**（见下方「未完成」） |
 | 服务端 | 仓颉 **1.1.3** + [轻舟 QingZhou](https://gitcode.com/BIT-FSSLab/QingZhou) 框架，Windows 部署 |
 | 持久化 | 文件存储（内存 Store + 写时原子落盘 JSON），不用数据库 |
 | 传输 | **框架原生 TLS**（不用 Nginx），自签证书必须带 SAN |
@@ -23,16 +23,19 @@
 | **服务端 M3 任务** | 我的任务（服务端分组）· 列表筛选 · 详情 · 创建（`client_token` 幂等）· 编辑/转交 · 状态流转与阻塞原因 · 软删除 · 日历同步 `lookup` | ✅ 完成并验证 |
 | **服务端 M4 课题** | 课题树（递归进度）· 详情（面包屑）· 创建 · 编辑 · 移动（**环形校验** + 深度 6 + 禁止跨部门）· 删除（**子节点上提，绝不级联**） | ✅ 完成并验证 |
 | **服务端 M5 部署** | 带 SAN 自签证书 · TLS 1.2/1.3 通过、1.0/1.1 被拒 · 部署包 18.8 MB · 从部署目录端到端跑通 | 🟡 本机完成；**公网部署待服务器信息** |
-| 客户端 | 由小组其他成员推进 | 进行中 |
+| **服务端代码评审修复** | 按 `docs/code-review.md` 修完 3 个 P0 权限漏洞 + 8 个 P1 + 13 个 P2，并补上会真正失败的回归测试 | ✅ 完成并验证 |
+| 客户端 | 由小组其他成员推进；**本仓库内仍是 DevEco 初始模板**（`entry/` 未接任何接口） | 进行中 |
 
-**接口进度 38 / 39**（认证 5 · 组织与成员 19 · 任务 8 · 课题 6；另 `/health` 已可用）。
+**接口进度 39 / 39**（认证 5 · 组织与成员 19 · 任务 8 · 课题 6 = 38 个业务接口，另加运维 `/health` 1 个）。
+> 口径说明：早期写「38 / 39」是把 `docs/api-design.md` §6.1「接口总清单（39 个）」里的 `/health` 漏算了。
+> 逐条核对后为 **39 / 39**。此外还有一个不在接口清单里的公开页面 `GET /join/{token}`（招募链接落地页）。
 
 **三套测试全部通过**（每次改动都要跑）：
 
 ```powershell
 cd server
-.\build\club-server.exe test                                              # 单测 233 项
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 280 项
+.\build\club-server.exe test                                              # 单测 273 项
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 318 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1 # TLS 22 项
 ```
 
@@ -98,8 +101,9 @@ cd build
 | --- | --- | --- |
 | **`docs/HANDOFF.md`** | **交接说明**：项目现状、已冻结设计、验证过的技术事实、未决事项 | **接手项目先看这个** |
 | `docs/server-guide.md` | 服务端指南：构建/运行/测试、进度、两条实现纪律 | 动服务端代码前看 |
-| **`docs/API-NOTES.md`** | 编译期 API 事实清单 + **25 条踩坑记录** | 加新函数前先查（避让框架同名符号） |
+| **`docs/API-NOTES.md`** | 编译期 API 事实清单 + **26 条踩坑记录** | 加新函数前先查（避让框架同名符号） |
 | `docs/api-design.md` | **接口设计的唯一权威**：39 个接口逐条定义 | 写服务端时全程对照 |
+| **`docs/code-review.md`** | **代码评审报告**：3 个 P0 权限漏洞 + 8 个 P1 + 13 个 P2，含复现步骤与修复建议 | 想了解"哪些坑已经踩过" |
 | `docs/v1-scope.md` | 范围基准：11 页面、6 张表、19 条业务规则、权限矩阵 | 想知道"这个要不要做" |
 | `docs/frontend-brief.md` | 前端对接精简版 | 客户端同事看 |
 | `docs/deploy-windows-verify.md` | 部署与验证步骤、目标配置基线 | 部署时看 |
@@ -131,7 +135,7 @@ cd build
 5. **证书必须带 SAN**：现代客户端完全忽略 CN，只看 `subjectAltName`。按真实公网 IP 重签后再部署。
 6. **私钥绝不入库**：`server/certs` 与 `server/dist` 都已在 `.gitignore`；用 `git check-ignore -v <路径>` 自检。
 
-> 完整的 25 条踩坑记录（含 PowerShell 5.1 的六个坑、cjenv 切换 SDK 打断构建等）见 **`docs/API-NOTES.md` 第 3 节**。
+> 完整的 26 条踩坑记录（含 PowerShell 5.1 的六个坑、cjenv 切换 SDK 打断构建等）见 **`docs/API-NOTES.md` 第 3 节**。
 
 ---
 
@@ -145,6 +149,7 @@ cd build
 | 4 | 忘记密码：v1 由会长重置，不做自助找回 | 已定 |
 | 5 | 服务器可用期限、备份交接人（至少两人） | 需向老师确认 |
 | 6 | 鸿蒙侧载分发（AGC 内部测试轨道、签名证书） | 流程耗时可能超过开发本身，**建议尽早启动** |
+| 7 | **客户端仍是 DevEco 初始模板**：`entry/` 未接任何接口，`bundleName` 与首页占位文案还是模板值 | 客户端同学开工前要先替换；发布前必须确认已改 |
 
 ---
 

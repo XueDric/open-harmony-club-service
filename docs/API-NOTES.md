@@ -155,6 +155,7 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 | 23 | **原生命令参数里的双引号会被吃掉** | `curl -d '{"a":"b"}'` 里的引号在 PS 5.1 传参时被剥离，服务端收到非法 JSON（表现为 400）。改用 `--data-binary @临时文件` |
 | 24 | **openssl / curl 往 stderr 写日志** | 脚本若用 `$ErrorActionPreference = "Stop"`，会把「原生命令写了 stderr」当成致命错误直接中断。用 `Continue` + 显式断言 |
 | 25 | **部署包里带着私钥** | `server/dist/club-server/certs/key.pem` 与 `server/certs/key.pem` 都必须在 `.gitignore` 里；`git check-ignore -v <路径>` 自检 |
+| 26 | **局部编辑会让 `.ps1` 丢掉 BOM** | 第 11 条讲的是"新脚本要带 BOM"，这里补上更隐蔽的一半：**已经正常的脚本被局部改写后 BOM 会消失**（多数工具默认写无 BOM 的 UTF-8）。下一次运行时整个文件按 ANSI 解析，中文变乱码，报出 `意外的标记"build\smoke-data"`、`表达式或语句中包含意外的标记` 这类**看起来像手写语法错误**的解析失败——很容易误判成"脚本改坏了"。判定：`[System.IO.File]::ReadAllBytes($p)[0..2]` 是否为 `EF BB BF`。改完 `.ps1` 必须确认 BOM 仍在 |
 
 ---
 

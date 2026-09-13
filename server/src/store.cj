@@ -117,7 +117,17 @@ public class Store {
     public var invite_links: HashMap<String, DeptInviteLink> = HashMap<String, DeptInviteLink>()
     public var tokens: HashMap<String, TokenRecord> = HashMap<String, TokenRecord>()
     public var idem: HashMap<String, IdemRecord> = HashMap<String, IdemRecord>()
+
+    /*
+     * login_fail / reg_fail_* 是**短时效限流状态，只存在内存里，不落盘**
+     * （P1 M-3）。理由：失败是高频路径，每失败一次就整库原子写一次，
+     * 等于给攻击者一个"发一个 401 换 18 MB 磁盘写"的放大杠杆。
+     * 重启后计数清零可以接受 —— 攻击者没有让服务重启的手段。
+     */
     public var login_fail: HashMap<String, LoginFail> = HashMap<String, LoginFail>()
+    public var reg_fail_count: Int64 = 0
+    public var reg_fail_first_at: Int64 = 0
+    public var reg_fail_until: Int64 = 0
 
     public var next_dept: Int64 = 1
     public var next_member: Int64 = 1
@@ -328,18 +338,49 @@ public func storeLoad(dir: String): Store {
             s.register_code = reqStrOr(r, "register_code", "")
             s.register_code_by = reqIntOr(r, "register_code_by", 0)
             s.register_code_at = reqIntOr(r, "register_code_at", 0)
+            /* 每条记录解析完都对一次总数（P1 M-7），见 checkLoaded */
+            let deptArr = arrOf(r, "departments")
             s.departments = deptArrFromJson(r, "departments")
+            checkLoaded("departments", deptArr, s.departments.size, file)
+            let memberArr = arrOf(r, "members")
             s.members = memberArrFromJson(r, "members")
+            checkLoaded("members", memberArr, s.members.size, file)
+            let planArr = arrOf(r, "plans")
             s.plans = planArrFromJson(r, "plans")
+            checkLoaded("plans", planArr, s.plans.size, file)
+            let taskArr = arrOf(r, "tasks")
             s.tasks = taskArrFromJson(r, "tasks")
+            checkLoaded("tasks", taskArr, s.tasks.size, file)
+            let linkArr = arrOf(r, "invite_links")
             s.invite_links = linkArrFromJson(r, "invite_links")
+            checkLoaded("invite_links", linkArr, s.invite_links.size, file)
+            let tokenArr = arrOf(r, "tokens")
             s.tokens = tokenArrFromJson(r, "tokens")
-            s.login_fail = loginFailArrFromJson(r, "login_fail")
+            checkLoaded("tokens", tokenArr, s.tokens.size, file)
             s.idem = idemArrFromJson(r, "idem")
+            /* login_fail 不再从文件读（P1 M-3：短时效限流状态只留内存）。
+             * 旧文件里的 login_fail 字段被忽略，不影响启动。 */
             return s
         case None =>
             /* 绝不静默降级为空库：下一次保存会把真实数据覆盖掉。 */
             throw Exception("数据文件无法解析，已停止启动以免覆盖数据：${file}")
+    }
+}
+
+/*
+ * 逐条校验：JSON 数组里有几条，就必须解析出几条（P1 M-7）。
+ *
+ * 原先每个元素的解析失败都被 `catch { () }` 静默吞掉：文件里 100 个任务，
+ * 坏了 3 个，服务照常启动，用户看到 97 个任务——接着下一次保存就把那 3 条永久覆盖。
+ * 静默丢数据比直接起不来严重得多，所以这里与"文件级解析失败"同一口径：
+ * 宁可起不来，也不要带着残缺数据继续写。
+ *
+ * 条数不等也可能是两条记录主键相同（后者覆盖前者），这同样是文件不一致，
+ * 拒绝启动也是正确的处理。
+ */
+func checkLoaded(label: String, arr: JsonArray, loaded: Int64, file: String): Unit {
+    if (arr.size() != loaded) {
+        throw Exception("数据文件 ${label} 有 ${arr.size()} 条，只解析出 ${loaded} 条（记录损坏或主键重复），已停止启动以免覆盖数据：${file}")
     }
 }
 
@@ -480,34 +521,6 @@ func tokenArrFromJson(o: JsonObject, key: String): HashMap<String, TokenRecord> 
     return m
 }
 
-func loginFailArrFromJson(o: JsonObject, key: String): HashMap<String, LoginFail> {
-    let m = HashMap<String, LoginFail>()
-    let a = arrOf(o, key)
-    var i: Int64 = 0
-    let n = a.size()
-    while (i < n) {
-        match (a.get(i)) {
-            case Some(v) =>
-                try {
-                    let obj = v.asObject()
-                    let phone = reqStrOr(obj, "phone", "")
-                    let lf = LoginFail()
-                    lf.count = reqIntOr(obj, "count", 0)
-                    lf.first_at = reqIntOr(obj, "first_at", 0)
-                    lf.locked_until = reqIntOr(obj, "locked_until", 0)
-                    if (phone.size > 0) {
-                        m[phone] = lf
-                    }
-                } catch (e: Exception) {
-                    ()
-                }
-            case None => ()
-        }
-        i += 1
-    }
-    return m
-}
-
 func idemArrFromJson(o: JsonObject, key: String): HashMap<String, IdemRecord> {
     let m = HashMap<String, IdemRecord>()
     let a = arrOf(o, key)
@@ -538,6 +551,13 @@ func idemArrFromJson(o: JsonObject, key: String): HashMap<String, IdemRecord> {
 /*
  * 原子落盘：写 tmp → 备份旧文件 → rename 覆盖。
  * 任何一步失败都抛异常（宁可让调用方看到错误，也不要"看起来保存成功了"）。
+ *
+ * L-7 已知取舍（记录在案，v1 不改）：本函数在全局锁 s.lock 内被调用，
+ * 于是**一次磁盘写出横跨整个互斥区**，所有并发请求在这段时间里排队。
+ * 单社团规模（几十人、几百条记录）下，这一次写出只有几毫秒到几十毫秒，
+ * 换来的好处是"响应 200 就意味着已落盘"这条强语义——对社团工具更重要。
+ * 真要改，方向是把快照取出锁外、异步写盘，但那会引入"200 之后还可能丢"的窗口，
+ * 属于 v2 的取舍，不在 v1 范围。
  */
 public func storeSave(s: Store): Unit {
     let root = JsonObject()
@@ -588,16 +608,7 @@ public func storeSave(s: Store): Unit {
     }
     root.put("tokens", toks)
 
-    let fails = JsonArray()
-    for ((k, f) in s.login_fail) {
-        let o = JsonObject()
-        jPutStr(o, "phone", k)
-        jPutInt(o, "count", f.count)
-        jPutInt(o, "first_at", f.first_at)
-        jPutInt(o, "locked_until", f.locked_until)
-        fails.add(o)
-    }
-    root.put("login_fail", fails)
+    /* login_fail 不落盘（P1 M-3），见 Store 字段上的注释。 */
 
     let idems = JsonArray()
     for ((k, r) in s.idem) {
@@ -685,6 +696,31 @@ func sortByKey<T>(arr: Array<T>, key: (T) -> Int64): Unit {
     }
 }
 
+/*
+ * 复合排序键的安全折算（P1 M-8）。
+ *
+ * `sort * 1000000 + id` 这个写法隐含前提：sort 必须是有界的小整数。原先没有校验，
+ * 一个 sort = 9223372036854775807 会让乘法溢出，排序键变成一个大负数，
+ * 而且这个坏值会**落盘**——之后每一次 GET /depts 都在排序时溢出，
+ * 接口从此永久 500，只能手工改文件才能恢复。
+ *
+ * 两道防线：handler 侧校验 sort 取值范围（h_dept.cj 的 SORT_MIN/SORT_MAX），
+ * 这里再夹一次——因为磁盘上可能已经有旧版本写下的越界值。夹紧只影响排序先后，
+ * 不会丢数据，也不会让接口起不来。
+ */
+public let SORT_MIN: Int64 = 0
+public let SORT_MAX: Int64 = 10000
+
+func sortKeyClamp(v: Int64): Int64 {
+    if (v < SORT_MIN) {
+        return SORT_MIN
+    }
+    if (v > SORT_MAX) {
+        return SORT_MAX
+    }
+    return v
+}
+
 /* 部门展示顺序：sort → id。 */
 public func sortedDepartments(s: Store): Array<Department> {
     let out = ArrayList<Department>()
@@ -692,7 +728,7 @@ public func sortedDepartments(s: Store): Array<Department> {
         out.add(d)
     }
     let arr = out.toArray()
-    sortByKey<Department>(arr, { d: Department => d.sort * 1000000 + d.id })
+    sortByKey<Department>(arr, { d: Department => sortKeyClamp(d.sort) * 1000000 + d.id })
     return arr
 }
 
@@ -705,7 +741,7 @@ public func sortedMembers(s: Store, list: ArrayList<Member>): Array<Member> {
             case Some(d) => ds = d.sort
             case None => ds = 999
         }
-        ds * 1000000 + m.id
+        sortKeyClamp(ds) * 1000000 + m.id
     })
     return arr
 }
@@ -827,13 +863,19 @@ public func planSubtreeIds(s: Store, rootId: Int64): HashSet<Int64> {
 
 public let IDEM_TTL: Int64 = 86400
 
-func idemKey(kind: String, token: String): String {
-    return "${kind}:${token}"
+/*
+ * 幂等键必须带上提交者本人（P0 H-2）。
+ * 原先只按 kind + token 索引：甲用 client_token 建了资源，乙拿同一个 token 重放，
+ * 就会被当成「甲的重复提交」，直接把甲的资源读回去——一个绕过权限判定的越权读。
+ * 带上 actorId 后，乙的 token 匹配不到任何记录，走正常创建流程，该 403 还是 403。
+ */
+func idemKey(kind: String, actorId: Int64, token: String): String {
+    return "${kind}:${actorId}:${token}"
 }
 
 /* 24 小时内命中则返回首次创建的资源 id。 */
-public func idemHit(s: Store, kind: String, token: String, now: Int64): ?Int64 {
-    let k = idemKey(kind, token)
+public func idemHit(s: Store, kind: String, actorId: Int64, token: String, now: Int64): ?Int64 {
+    let k = idemKey(kind, actorId, token)
     match (s.idem.get(k)) {
         case Some(rec) =>
             if (now - rec.created_at <= IDEM_TTL) {
@@ -845,11 +887,11 @@ public func idemHit(s: Store, kind: String, token: String, now: Int64): ?Int64 {
     }
 }
 
-public func idemPut(s: Store, kind: String, token: String, resourceId: Int64, now: Int64): Unit {
+public func idemPut(s: Store, kind: String, actorId: Int64, token: String, resourceId: Int64, now: Int64): Unit {
     let rec = IdemRecord()
     rec.resource_id = resourceId
     rec.created_at = now
-    s.idem[idemKey(kind, token)] = rec
+    s.idem[idemKey(kind, actorId, token)] = rec
     /* 顺带清理过期项，避免这张表无限增长 */
     if (s.idem.size > 200) {
         let doomed = ArrayList<String>()
@@ -1098,6 +1140,20 @@ public func planStatsAll(s: Store, ids: HashSet<Int64>): HashMap<Int64, PlanStat
         }
     }
     return stats
+}
+
+/*
+ * 单个课题的聚合统计（含整棵子树）。
+ *
+ * 存在的理由（P1 M-1）：POST /plans 与 PATCH /plans/{id} 的响应里也带 progress，
+ * 起初那里传的是 None，序列化出来就是 total=0 / done=0——一个假进度。客户端改完
+ * 标题，进度条会突然归零。凡是返回 plan 对象的地方都必须用这个函数取真值。
+ * 命中幂等回放时同理。
+ */
+public func planStatsOf(s: Store, id: Int64): ?PlanStats {
+    let sub = HashSet<Int64>()
+    planSubtreeInto(s, id, sub)
+    return planStatsAll(s, sub).get(id)
 }
 
 /*

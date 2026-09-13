@@ -43,8 +43,14 @@ public func handleDeptCreate(ctx: Context, s: Store): Unit {
         if (deptNameTaken(s, name, 0)) {
             throw apiErrFields("ALREADY_EXISTS", "部门名已存在", oneField("name", "部门名已存在"))
         }
-        /* sort 缺省 = 当前部门数（追加到末尾） */
+        /* sort 缺省 = 当前部门数（追加到末尾）。
+         * M-8：必须校验范围。sort 直接参与 `sort * 1000000 + id` 的排序键，
+         * 越界值会溢出并**落盘**，之后每次 GET /depts 都会 500 且只能手改文件恢复。 */
         let sort = reqIntOr(body, "sort", s.departments.size)
+        if (sort < SORT_MIN || sort > SORT_MAX) {
+            throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+                oneField("sort", "排序值需在 ${SORT_MIN} 到 ${SORT_MAX} 之间"))
+        }
         let d = Department()
         d.id = s.next_dept
         s.next_dept += 1
@@ -95,6 +101,11 @@ public func handleDeptUpdate(ctx: Context, s: Store): Unit {
         }
         match (jsonGetInt64(body, "sort")) {
             case Some(sv) =>
+                /* M-8：同 handleDeptCreate，越界值会让排序键溢出并永久写进数据文件 */
+                if (sv < SORT_MIN || sv > SORT_MAX) {
+                    throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+                        oneField("sort", "排序值需在 ${SORT_MIN} 到 ${SORT_MAX} 之间"))
+                }
                 d.sort = sv
                 touched = true
             case None => ()

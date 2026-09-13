@@ -316,6 +316,14 @@ try {
     Check "删除空部门 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
     $r = Call-Api "PATCH" "/api/v1/depts/99999" @{ name = "x" } $presToken
     Check "改不存在的部门 -> 404" (($r.status -eq 404) -and ((ErrCode $r) -eq "DEPT_NOT_FOUND")) "status=$($r.status)"
+    # M-8：sort 直接参与 `sort * 1000000 + id` 的排序键，越界会溢出并**落盘**，
+    # 之后每次 GET /depts 都在排序时溢出 —— 接口永久 500，只能手改文件恢复。
+    $r = Call-Api "POST" "/api/v1/depts" @{ name = "越界排序部门"; sort = 9223372036854775807 } $presToken
+    Check "新建 sort 越界 -> 400（M-8）" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PATCH" "/api/v1/depts/$deptPub" @{ sort = 9223372036854775807 } $presToken
+    Check "改 sort 越界 -> 400（M-8）" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "GET" "/api/v1/depts" $null $presToken
+    Check "GET /depts 仍然正常（M-8 没把接口打挂）" ($r.status -eq 200) "status=$($r.status)"
 
     # ---------- 9. 待分配与授权（招新主线） ----------
     Write-Host ""
@@ -476,6 +484,13 @@ try {
     Check "部长登录成功" ($leadToken.Length -eq 64)
     $r = Call-Api "POST" "/api/v1/members/$memId/reset-password" $null $leadToken
     Check "部长重置本部门成员密码 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    # L-4：口径统一为"管理员救济动作，本人不适用"（本人改密走 PUT /auth/password）。
+    # 这条断言把语义钉死，避免以后又出现两处文档打架。
+    $memPwAfterLead = [string]$r.json.data.temporary_password
+    $memSelfToken = Login-Token $memPhone $memPwAfterLead
+    Check "成员用新临时密码登录" ($memSelfToken.Length -eq 64)
+    $r = Call-Api "POST" "/api/v1/members/$memId/reset-password" $null $memSelfToken
+    Check "成员对自己重置密码 -> 403（L-4 本人改密走 /auth/password）" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
     $r = Call-Api "POST" "/api/v1/members/$newId/reset-password" $null $leadToken
     Check "部长重置外部门成员密码 -> 403 FORBIDDEN_NOT_IN_DEPT" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_NOT_IN_DEPT")) "status=$($r.status) code=$(ErrCode $r)"
     $r = Call-Api "POST" "/api/v1/members/$presId/reset-password" $null $leadToken
@@ -484,6 +499,29 @@ try {
     Check "部长新建部门 -> 403" ($r.status -eq 403) "status=$($r.status)"
     $r = Call-Api "POST" "/api/v1/members/$stillId/assign" @{ dept_id = $deptOps; role = "member" } $leadToken
     Check "部长审批待分配 -> 403（审批统一归会长/副会长）" ($r.status -eq 403) "status=$($r.status) code=$(ErrCode $r)"
+
+    # H-1 回归（P0 权限漏洞）：上面那条"部长重置会长密码 -> 403"是**假绿灯**——
+    # 会长在主席团、部长在运营部，403 其实是 FORBIDDEN_NOT_IN_DEPT 挡的，
+    # 角色维度的漏洞根本没被测到。这里把部长临时调进会长所在的部门再试一次。
+    $r = Call-Api "GET" "/api/v1/depts" $null $presToken
+    $deptPres = ($r.json.data.items | Where-Object { $_.name -eq "主席团" }).id
+    $r = Call-Api "PATCH" "/api/v1/members/$leadId" @{ dept_id = $deptPres } $presToken
+    Check "会长把部长临时调进主席团" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$presId/reset-password" $null $leadToken
+    Check "同部门部长重置会长密码 -> 403 FORBIDDEN_ROLE（H-1）" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PATCH" "/api/v1/members/$presId" @{ name = "被部长改掉的会长" } $leadToken
+    Check "同部门部长改会长姓名 -> 403 FORBIDDEN_ROLE（H-1）" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$vpId/reset-password" $null $leadToken
+    Check "同部门部长重置副会长密码 -> 403 FORBIDDEN_ROLE（H-1）" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "GET" "/api/v1/auth/me" $null $presToken
+    Check "会长姓名未被改动（H-1 真的挡住了）" ($r.json.data.member.name -ne "被部长改掉的会长") "name=$($r.json.data.member.name)"
+    # 同档位保护：部长也改不了同部门的另一位部长
+    $r = Call-Api "PATCH" "/api/v1/members/$leadId" @{ name = "部长改名" } $leadToken
+    Check "部长改自己姓名 -> 200（改名不是提权）" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PATCH" "/api/v1/members/$leadId" @{ name = "部长候选人" } $presToken
+    Check "复原部长姓名" ($r.status -eq 200) "status=$($r.status)"
+    $r = Call-Api "PATCH" "/api/v1/members/$leadId" @{ dept_id = $deptOps } $presToken
+    Check "复原：部长回到运营部" ($r.status -eq 200) "status=$($r.status)"
 
     # ---------- 13. 注册配置 ----------
     Write-Host ""
@@ -501,7 +539,12 @@ try {
     Check "新口令可注册 -> 201" ($r.status -eq 201) "status=$($r.status)"
     $regCode = "NEWCODE1"
     $r = Call-Api "PUT" "/api/v1/register-config/code" @{ code = "ab" } $presToken
-    Check "口令过短 -> 400" ($r.status -eq 400) "status=$($r.status)"
+    Check "口令过短（2 位）-> 400" ($r.status -eq 400) "status=$($r.status)"
+    # M-2：下限从 4 提到 6，5 位也必须拒
+    $r = Call-Api "PUT" "/api/v1/register-config/code" @{ code = "ABCDE" } $presToken
+    Check "口令 5 位 -> 400（M-2 下限 6）" ($r.status -eq 400) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PUT" "/api/v1/register-config/code" @{ code = "ABCDEF" } $presToken
+    Check "口令 6 位 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
     $r = Call-Api "POST" "/api/v1/register-config/rotate" $null $presToken
     Check "随机轮换 -> 200" ($r.status -eq 200) "status=$($r.status)"
     $regCode = [string]$r.json.data.code
@@ -535,6 +578,13 @@ try {
     $r = Call-Api "POST" "/api/v1/members/$linkMemberId/assign" @{ dept_id = $hinted.dept_hint.id; role = "member" } $presToken
     Check "按链接预填直接分配 -> 200" ($r.status -eq 200) "status=$($r.status)"
 
+    # L-2：落地页必须真的存在（链接是要发到群里的，点开不能是 404）
+    $r = Call-Api "GET" "/join/$linkToken"
+    Check "GET /join/{token} -> 200（L-2 落地页）" ($r.status -eq 200) "status=$($r.status)"
+    Check "落地页是 HTML" ($r.raw -like "*<html*") "raw=$($r.raw.Substring(0, [Math]::Min(40, $r.raw.Length)))"
+    $r = Call-Api "GET" "/join/nonexistent"
+    Check "失效链接落地页 -> 200（提示已失效）" (($r.status -eq 200) -and ($r.raw -like "*失效*")) "status=$($r.status)"
+
     $r = Call-Api "DELETE" "/api/v1/dept-invite-links/$linkToken" $null $presToken
     Check "停用链接 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
     Check "停用后 enabled=false" ($r.json.data.enabled -eq $false)
@@ -542,6 +592,14 @@ try {
     Check "重复停用幂等 -> 200" ($r.status -eq 200) "status=$($r.status)"
     $r = Call-Api "DELETE" "/api/v1/dept-invite-links/nonexistent" $null $presToken
     Check "停用不存在的链接 -> 200（幂等）" ($r.status -eq 200) "status=$($r.status)"
+    # L-3：两种结果必须是同一个响应形状，客户端不用写特例
+    # （视图直接放在 data 下 —— 与"链接存在"那条路径完全一致）
+    Check "不存在的链接也返回完整视图（L-3）" ($null -ne $r.json.data.token) "json=$($r.raw)"
+    Check "不存在的链接 enabled=false（L-3）" ($r.json.data.enabled -eq $false)
+    Check "不存在的链接回显 token（L-3）" ($r.json.data.token -eq "nonexistent")
+    Check "不存在的链接也有 dept 字段（L-3）" ($null -ne $r.json.data.dept)
+    $r = Call-Api "GET" "/join/$linkToken"
+    Check "停用后的落地页提示失效" ($r.raw -like "*失效*") "status=$($r.status)"
 
     # ---------- 15. 任务：创建与幂等 ----------
     Write-Host ""
@@ -573,6 +631,20 @@ try {
     Check "重复提交 -> 200（不是 201）" ($r.status -eq 200) "status=$($r.status)"
     Check "重复提交 duplicated=true" ($r.json.data.duplicated -eq $true)
     Check "重复提交返回同一个任务（没有创建两遍）" ($r.json.data.task.id -eq $idemTask)
+
+    # H-2 回归（P0 越权读）：甲用过的 client_token，乙拿去重放**不能**读到甲的资源。
+    # 幂等键带上提交者之后，乙的这次请求匹配不到任何记录，会走正常创建流程。
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "幂等任务"; owner_id = $memId; client_token = $ct } $leadToken
+    Check "换个人重放同一 client_token -> 不是 200 回放（H-2）" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r)"
+    Check "换个人重放拿到的是自己的新资源（H-2）" ($r.json.data.task.id -ne $idemTask) "id=$($r.json.data.task.id) vs $idemTask"
+    Check "换个人重放不会返回 duplicated（H-2）" ($null -eq $r.json.data.duplicated) "duplicated=$($r.json.data.duplicated)"
+
+    # M-6：ArkTS/JS 的 toISOString() 带毫秒，客户端第一天就会撞上它
+    $msDue = (Get-Date).AddDays(5).ToString("yyyy-MM-ddTHH:mm:ss.fff") + "+08:00"
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "带毫秒的截止时间"; owner_id = $memId; due_at = $msDue } $presToken
+    Check "due_at 带毫秒 -> 201（M-6）" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r) due=$msDue"
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "不存在的日期"; owner_id = $memId; due_at = "2026-02-30T10:00:00+08:00" } $presToken
+    Check "2026-02-30 -> 400（L-5 不静默顺延）" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
 
     $r = Call-Api "POST" "/api/v1/tasks" @{ title = "没有负责人" } $presToken
     Check "缺负责人 -> 400 VALIDATION_FAILED" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
@@ -675,6 +747,30 @@ try {
     $deletedStill = $r.json.data.items | Where-Object { $_.id -eq $idemTask }
     Check "软删除的任务不再出现在列表里" ($null -eq $deletedStill)
 
+    # L-8：待分配与已退出是两件事，错误码必须分开
+    # （原先两条路径都报 MEMBER_PENDING，客户端会提示"尚未被分配"，与事实不符）
+    $r = New-Account "13900000018" "临时退出者" "leavepw12" $regCode
+    $leaveId = $r.json.data.member.id
+    $r = Call-Api "POST" "/api/v1/members/$leaveId/assign" @{ dept_id = $deptOps; role = "member" } $presToken
+    Check "临时成员已分配" ($r.status -eq 200) "status=$($r.status)"
+    $r = Call-Api "POST" "/api/v1/members/$leaveId/disable" $null $presToken
+    Check "移出社团 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "分给已退出成员"; owner_id = $leaveId } $presToken
+    Check "给已退出成员建任务 -> 403 MEMBER_DISABLED（L-8）" (($r.status -eq 403) -and ((ErrCode $r) -eq "MEMBER_DISABLED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PATCH" "/api/v1/tasks/$taskOverdue" @{ owner_id = $leaveId } $presToken
+    Check "转交给已退出成员 -> 403 MEMBER_DISABLED（L-8）" (($r.status -eq 403) -and ((ErrCode $r) -eq "MEMBER_DISABLED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "已退出者负责的课题"; dept_id = $deptOps; owner_id = $leaveId } $presToken
+    Check "给已退出成员建课题 -> 403 MEMBER_DISABLED（L-8）" (($r.status -eq 403) -and ((ErrCode $r) -eq "MEMBER_DISABLED")) "status=$($r.status) code=$(ErrCode $r)"
+
+    # M-4：assign 对 disabled 目标即"恢复"。文档写明移出社团保留数据、日后可恢复，
+    # 所以行为保留；但审计里必须能与普通分配区分（动作名 restore-member）。
+    # 这条用例把语义钉死：以后要改成"拒绝"或"独立恢复接口"，先改这里。
+    $r = Call-Api "POST" "/api/v1/members/$leaveId/assign" @{ dept_id = $deptOps; role = "member" } $presToken
+    Check "恢复已退出成员（assign）-> 200（M-4 语义已钉住）" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    Check "恢复后 status=active" ($r.json.data.status -eq "active")
+    $r = Call-Api "POST" "/api/v1/members/$leaveId/disable" $null $presToken
+    Check "再次移出（复原状态）-> 200" ($r.status -eq 200) "status=$($r.status)"
+
     # ---------- 19. 课题：创建与树 ----------
     Write-Host ""
     Write-Host "[19] 课题：创建、dept_id 规则、课题树"
@@ -776,6 +872,18 @@ try {
     Check "跨部门移动 -> 400（v1 禁止）" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
     $r = Call-Api "POST" "/api/v1/plans/$planPub/move" @{ new_parent_id = $planChild } $leadToken
     Check "部长跨部门移动 -> 403" ($r.status -eq 403) "status=$($r.status) code=$(ErrCode $r)"
+    # H-3 回归（P0）：换父节点那条路判了权限，**提升为顶层那条路原先没有判**。
+    # 部长可以把自己部门的课题 dept_id 一填就"提升"到别的部门去。
+    $r = Call-Api "GET" "/api/v1/plans/$planGrand" $null $presToken
+    $grandParentBefore = $r.json.data.plan.parent_id
+    $r = Call-Api "POST" "/api/v1/plans/$planGrand/move" @{ new_parent_id = $null; dept_id = $deptPub } $leadToken
+    Check "部长把课题提升到别的部门 -> 403（H-3）" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_NOT_IN_DEPT")) "status=$($r.status) code=$(ErrCode $r)"
+    # 被拒绝的移动不该改动任何状态：父节点仍是移动前那个
+    # （子树不存 dept_id，所以这里查 parent_id 而不是 dept.id）
+    $r = Call-Api "GET" "/api/v1/plans/$planGrand" $null $presToken
+    Check "课题没有被偷偷挪走（H-3）" ($r.json.data.plan.parent_id -eq $grandParentBefore) "parent=$($r.json.data.plan.parent_id) 期望=$grandParentBefore"
+    $r = Call-Api "POST" "/api/v1/plans/$planGrand/move" @{ new_parent_id = $null; dept_id = $deptPub } $presToken
+    Check "会长提升到别的部门 -> 400（v1 禁止跨部门）" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
 
     $r = Call-Api "POST" "/api/v1/plans" @{ title = "另一分枝"; parent_id = $planRoot; owner_id = $leadId } $presToken
     $planBranch = $r.json.data.plan.id
@@ -790,10 +898,16 @@ try {
     # ---------- 22. 课题：编辑与删除上提 ----------
     Write-Host ""
     Write-Host "[22] 课题编辑、删除上提（绝不级联删除）"
+    $r = Call-Api "GET" "/api/v1/plans/$planChild" $null $presToken
+    $childTotalBefore = $r.json.data.plan.progress.total
     $r = Call-Api "PATCH" "/api/v1/plans/$planChild" @{ title = "改名后的子课题"; desc = "补充说明" } $presToken
     Check "编辑课题 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
     Check "标题已改" ($r.json.data.plan.title -eq "改名后的子课题")
     Check "描述已存" ($r.json.data.plan.desc -eq "补充说明")
+    # M-1：PATCH 的响应里原先 progress 恒为 0/0（传了 None 进去）。
+    # 客户端改完标题，进度条会突然归零——一个"看起来像数据丢失"的假象。
+    Check "PATCH 返回真实进度而非 0/0（M-1）" ($r.json.data.plan.progress.total -eq $childTotalBefore) "patch=$($r.json.data.plan.progress.total) get=$childTotalBefore"
+    Check "PATCH 的进度非零（M-1）" ($r.json.data.plan.progress.total -gt 0) "total=$($r.json.data.plan.progress.total)"
     $r = Call-Api "PATCH" "/api/v1/plans/$planChild" @{ dept_id = $deptPub } $presToken
     Check "PATCH 改 dept_id -> 400" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status)"
     $r = Call-Api "PATCH" "/api/v1/plans/$planChild" @{ owner_id = 0 } $presToken
@@ -845,6 +959,17 @@ try {
     }
     Check "日志出现『服务已停止』" ($logText -match "服务已停止") "log=[$logText]"
     Check "日志无 ERROR/FATAL" (($logText -notmatch "\[FATAL\]") -and ($logText -notmatch "FSException")) ""
+
+    # 审计日志：敏感操作要能事后追查，且 M-4 的"恢复"与普通分配要能区分开
+    $auditText = ""
+    $auditPath = Join-Path $dataAbs "audit.log"
+    if (Test-Path $auditPath) {
+        $auditText = [System.IO.File]::ReadAllText($auditPath, [System.Text.Encoding]::UTF8)
+    }
+    Check "审计日志已生成" ($auditText.Length -gt 0) "path=$auditPath"
+    Check "审计含重置密码记录" ($auditText -match "reset-password")
+    Check "审计含注册口令更换记录" ($auditText -match "change-register-code")
+    Check "审计区分恢复与普通分配（M-4）" (($auditText -match "restore-member") -and ($auditText -match "assign-member")) "audit=$auditText"
 
     # ---------- 24. 重启后数据仍在 ----------
     Write-Host ""

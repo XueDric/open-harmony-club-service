@@ -248,10 +248,14 @@ public func handleTaskCreate(ctx: Context, s: Store): Unit {
     try {
         let now = nowEpoch()
         if (clientToken.size > 0) {
-            match (idemHit(s, "task", clientToken, now)) {
+            match (idemHit(s, "task", actor.id, clientToken, now)) {
                 case Some(rid) =>
                     match (activeTaskById(s, rid)) {
                         case Some(existing) =>
+                            /* 命中也不能免检：拿首次结果回放之前，按本次操作者重新判一次
+                             * 查看权限（P0 H-2）。键里已经带了 actorId，这一层是防御纵深——
+                             * 万一将来有人改动键的构成，越权读也不会被顺手放回来。 */
+                            requireAccess(actor, Action.ViewTasks, targetOfTask(actor, existing))
                             let data = JsonObject()
                             jPutObj(data, "task", taskDetail(s, existing, now))
                             jPutBool(data, "duplicated", true)
@@ -302,7 +306,7 @@ public func handleTaskCreate(ctx: Context, s: Store): Unit {
         t.updated_at = now
         s.tasks[t.id] = t
         if (clientToken.size > 0) {
-            idemPut(s, "task", clientToken, t.id, now)
+            idemPut(s, "task", actor.id, clientToken, t.id, now)
         }
         storeSave(s)
 
@@ -358,8 +362,14 @@ public func handleTaskUpdate(ctx: Context, s: Store): Unit {
                     case Some(m) => m
                     case None => throw apiErr("MEMBER_NOT_FOUND")
                 }
-                if (owner.status != "active") {
+                /* L-8：原先无论 pending 还是 disabled 都报 MEMBER_PENDING，
+                 * 客户端会提示「尚未被分配」，而真实原因是「已被移出社团」。
+                 * 两种状态给两个码，与创建路径（本文件 handleTaskCreate）保持一致。 */
+                if (owner.status == "pending") {
                     throw apiErrMsg("MEMBER_PENDING", "目标成员尚未被分配，不能接任务")
+                }
+                if (owner.status == "disabled") {
+                    throw apiErrMsg("MEMBER_DISABLED", "目标成员已被移出社团，不能接任务")
                 }
                 /* 转交同样受分配范围约束 */
                 let tgt2 = Target()

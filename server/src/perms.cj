@@ -65,6 +65,44 @@ public class Target {
 }
 
 
+/*
+ * 角色档位：数字越大权限越高。
+ * 部长与副部长同档（v1-scope §3.4.3：两者同权，仅名称不同）。
+ * 待分配/未知角色为 0，低于任何在册角色。
+ */
+func roleRank(role: String): Int64 {
+    if (role == "president") { return 5 }
+    if (role == "vice_president") { return 4 }
+    if (role == "lead") { return 3 }
+    if (role == "vice_lead") { return 3 }
+    if (role == "member") { return 1 }
+    return 0
+}
+
+/*
+ * 「不能改动同档或更高档的人」——2026-09-14 修复权限漏洞。
+ *
+ * 原先这条约束只写在副会长分支里，部长/副部长分支对 EditMemberName / ResetPassword
+ * 直接放行，而部门范围判定只要求「同一部门」。于是只要把部长分到会长所在的部门，
+ * 部长就能改会长的姓名、重置会长的密码，进而接管会长账号——报告里的 P0 H-1。
+ *
+ * 修法是把约束从「一个分支的特例」改成「部长档的档位规则」：
+ * 目标档位必须**严格低于**操作者本人。这样部长动不了副部长/部长/副会长/会长。
+ * （副会长是否改得动同僚副会长，文档口径是「与会长同权」，因此那一档仍只排除会长本人，
+ *  不在这个函数里收紧。）
+ */
+func outranks(actor_role: String, target_role: String): Bool {
+    if (actor_role == "president") {
+        return true
+    }
+    /* 目标档位未知（空串）：宁拒不放过，避免将来某个新 handler 忘填 target_role
+     * 就把这条规则悄悄绕过。 */
+    if (target_role == "") {
+        return false
+    }
+    return roleRank(target_role) < roleRank(actor_role)
+}
+
 /* 角色维度：这个角色能不能做这个动作（不看范围）。 */
 func roleAllows(role: String, a: Action, t: Target): Bool {
     if (role == "president") {
@@ -92,8 +130,15 @@ func roleAllows(role: String, a: Action, t: Target): Bool {
         match (a) {
             case ViewMembers => return true
             case ViewTasks => return true
-            case EditMemberName => return true
-            case ResetPassword => return true
+            /* 只能作用于档位比自己低的成员（P0 H-1）：部长改不了同僚部长，
+             * 更改不了副会长与会长，即使目标恰好和自己同部门。
+             * 例外是**改自己的姓名**：那不是提权（改名不改变角色），
+             * 而 api-design §3.8 的矩阵里「编辑成员姓名」对部长/副部长是「本部门」，
+             * 本部门当然包含自己。scopeAllows 里原本就为此留了一条 is_self 分支。 */
+            case EditMemberName => return t.is_self || outranks(role, t.target_role)
+            /* 重置密码没有 is_self 例外：本接口签发一次性临时密码，是管理员救济动作，
+             * 本人改密走 PUT /auth/password（P2 L-4，口径已统一）。 */
+            case ResetPassword => return outranks(role, t.target_role)
             case CreatePlan => return true
             case EditPlan => return true
             case MovePlan => return true
@@ -131,7 +176,6 @@ func scopeAllows(m: Member, a: Action, t: Target): Bool {
     if (t.is_self) {
         match (a) {
             case UpdateTaskStatus => return true
-            case ResetPassword => return true
             case _ => ()
         }
     }
