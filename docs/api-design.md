@@ -1578,8 +1578,8 @@ progress(P) =
 | `frontend-brief.md` | v1.0 | 前端对接说明（精简版） |
 | `qingzhou-tls-requirement.md` | v1.0 | 已发轻舟团队 |
 | `qingzhou-tls-verification.md` | — | 已验证他们交付的 TLS，已发轻舟团队 |
-| `server/README.md` | — | **服务端**：构建/运行/测试与设计约定 |
-| `server/API-NOTES.md` | — | **服务端**：编译期 API 事实清单与踩坑记录（探针实测） |
+| `server-guide.md` | — | **服务端**：构建/运行/测试与设计约定 |
+| `API-NOTES.md` | — | **服务端**：编译期 API 事实清单与踩坑记录（探针实测） |
 
 ### 下一步建议
 

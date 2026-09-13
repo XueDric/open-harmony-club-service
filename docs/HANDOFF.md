@@ -65,8 +65,8 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | `frontend-brief.md` | 前端对接精简版 | 客户端同事看 |
 | `deploy-windows-verify.md` | 部署与验证、目标配置基线 | 部署时看 |
 | `qingzhou-tls-verification.md` | 轻舟 TLS 实测与缺陷清单 | 遇到 TLS 问题时看 |
-| **`server/README.md`** | **服务端**：构建/初始化/运行/测试、进度表、两条实现纪律 | **写服务端时先看** |
-| **`server/API-NOTES.md`** | **服务端**：编译期 API 事实清单 + 15 条踩坑记录 | 加新函数前先查（避让框架同名符号） |
+| **`server-guide.md`** | **服务端**：构建/初始化/运行/测试、进度表、两条实现纪律 | **写服务端时先看** |
+| **`API-NOTES.md`** | **服务端**：编译期 API 事实清单 + 15 条踩坑记录 | 加新函数前先查（避让框架同名符号） |
 
 ---
 
@@ -222,7 +222,7 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 
 ### 11.1 已完成并验证：M1 骨架 + M2 组织与成员
 
-代码在 `server/`（19 个源文件），详见 `server/README.md`。
+代码在 `server/`（19 个源文件），详见 `server-guide.md`。
 **接口进度 24 / 39**（认证 5 + 组织与成员 19）；剩余：任务 8、课题 6、运维 1（`/health` 已做）。
 
 | 验证 | 结果 |
@@ -286,9 +286,10 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 `msvcrt`/`ucrtbase`/`msvcp_win`/`KERNEL32`/`KERNELBASE` 全未变
 ——这也解释了"`msvcrt!wcslen` 机器码一字未改却崩在那里"。
 
-完整证据链、复现脚本与证据包见：
-`cangjie-runtime-startup-crash.md`（**可直接提交给仓颉团队**）、
-`cangjie-runtime-crash-report-2026-09-13.zip`、`server/API-NOTES.md` §5。
+完整证据链与复现源码见：
+`cangjie-runtime-startup-crash.md`（**已提交给仓颉团队**）、`API-NOTES.md` §5、
+仓库根目录的 `cangjie-repro/repro.cj`。
+（当时的证据 zip 是一次性产物，已按需删除；结论都固化在上述文档里。）
 
 
 同一时段还发现：`build.ps1` 原先依赖环境里的 `CANGJIE_HOME`，而 **cjenv 把它切到了 1.0.5**，

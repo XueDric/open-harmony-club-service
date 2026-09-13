@@ -6,7 +6,7 @@ package qingzhou
  * 社团管理工具 · 服务端
  * 权限判定 —— **全项目唯一一处**（api-design §1.6）。
  *
- * 铁律（HANDOFF §5）：权限判定收敛到一个函数，**禁止在每个 handler 里手写 if**。
+ * 铁律（..\docs\..\docs\HANDOFF.md §5）：权限判定收敛到一个函数，**禁止在每个 handler 里手写 if**。
  * 十几个接口各写一遍权限，一定会漏掉某个组合，而权限漏洞是社团工具里
  * 最难发现、后果最难受的一类缺陷。
  *
@@ -64,14 +64,6 @@ public class Target {
     public init() {}
 }
 
-public func targetSelf(m: Member): Target {
-    let t = Target()
-    t.member_id = m.id
-    t.is_self = true
-    t.dept_id = m.dept_id
-    t.target_role = m.role
-    return t
-}
 
 /* 角色维度：这个角色能不能做这个动作（不看范围）。 */
 func roleAllows(role: String, a: Action, t: Target): Bool {

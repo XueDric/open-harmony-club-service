@@ -1,6 +1,6 @@
 ﻿# 社团管理工具 · 服务端构建脚本
 #
-# 编译路径（已在 HANDOFF §2 / qingzhou-tls-verification.md §1.2 实测过）：
+# 编译路径（已在 ..\docs\..\docs\HANDOFF.md §2 / ..\docs\qingzhou-tls-verification.md §1.2 实测过）：
 #   cjc 1.1.3 + stdx 1.1.3.1（静态）+ 轻舟源码，**同一次调用、同一个包**。
 #
 # 为什么不用 cjpm：轻舟自己的 examples/*.cj 都写 `package qingzhou`，
@@ -45,7 +45,7 @@ $env:PATH = (Join-Path $CangjieHome "bin") + ";" +
 $libs = (Get-ChildItem "$Stdx\libstdx*.a" | ForEach-Object { "-l:$($_.Name)" })
 
 # 排除框架自己的入口与测试：main.cj 有 main()、unit_tests.cj / manual_runner.cj 是框架自测，
-# 我们的 main.cj 提供入口。这与 qingzhou-tls-verification.md 里编译 examples/https.cj 的命令一致。
+# 我们的 main.cj 提供入口。这与 ..\docs\qingzhou-tls-verification.md 里编译 examples/https.cj 的命令一致。
 $fw = Get-ChildItem "$QingZhou\src\*.cj" |
       Where-Object { $_.Name -notin @('main.cj', 'unit_tests.cj', 'manual_runner.cj') } |
       ForEach-Object { $_.FullName }
@@ -61,7 +61,7 @@ if ($LASTEXITCODE -ne 0) { throw "编译失败 (exit $LASTEXITCODE)" }
 Write-Host "[build] 编译通过"
 
 if (-not $NoDll) {
-    # 部署文件集（deploy-windows-verify.md §2）：exe + 4 个 DLL。
+    # 部署文件集（..\docs\deploy-windows-verify.md §2）：exe + 4 个 DLL。
     # 缺 libcangjie-runtime.dll 会启动即失败；缺两个 OpenSSL 3 DLL 则 crypto 运行时才报错。
     $dlls = @(
         @{ n = "libcangjie-runtime.dll"; d = $RuntimeDir },

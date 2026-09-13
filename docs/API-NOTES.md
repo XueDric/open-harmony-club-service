@@ -225,7 +225,8 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 > 卸载后**运行正常时该项依然非空**，该判据不成立，特此更正。
 
 > 完整缺陷报告（可直接提交给仓颉团队）见仓库根目录 `cangjie-runtime-startup-crash.md`；
-> 证据包为 `cangjie-runtime-crash-report-2026-09-13.zip`。
+> 当时的证据包（4 份 WER 崩溃报告、事件日志、PE 对照输出）是一次性产物，已按需删除；
+> 结论都固化在本文档与同目录的 `cangjie-runtime-startup-crash.md` 里。
 
 ---
 

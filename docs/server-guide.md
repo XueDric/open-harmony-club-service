@@ -1,7 +1,7 @@
 # 社团管理工具 · 服务端
 
 > 仓颉 1.1.3 + [轻舟 QingZhou](https://gitcode.com/BIT-FSSLab/QingZhou) · 文件存储 · Windows 部署
-> 接口权威：`../api-design.md`（39 个接口）· 范围权威：`../v1-scope.md`
+> 接口权威：`api-design.md`（39 个接口）· 范围权威：`v1-scope.md`
 
 ## 这个服务端解决什么
 
@@ -159,7 +159,7 @@ HANDOFF §5 的五条原则在这里的落点：
 
 ## 已知待确认项
 
-见 `../HANDOFF.md` §7 与本次 M1 报告；其中一项是**文档内部冲突**：
+见 `HANDOFF.md` §7 与本次 M1 报告；其中一项是**文档内部冲突**：
 
 - `api-design.md` §3.1 / §6.1 写 `DELETE /depts/{id}` **限会长**，§3.8 汇总表写「部门增删改 ✅✅（含副会长）」。
   当前实现按**更严格**的一侧（会长独占），代码里已标注待确认。

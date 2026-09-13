@@ -241,10 +241,6 @@ public func startOfLocalDay(epoch: Int64): Int64 {
     return days * DAY_SECONDS - TZ_OFFSET
 }
 
-/* "无此时间"的哨兵：0 表示 null（1970 年不可能成为真实截止时间）。 */
-public func hasTime(epoch: Int64): Bool {
-    return epoch > 0
-}
 
 /* 逾期是派生量，永不落盘。 */
 public func isOverdue(dueAt: Int64, now: Int64): Bool {

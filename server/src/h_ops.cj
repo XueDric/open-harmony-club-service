@@ -6,7 +6,7 @@ package qingzhou
  * 社团管理工具 · 服务端
  * 运维接口：健康检查 + 优雅关闭。
  *
- * Windows 没有 std.runtime.Signal（HANDOFF §6），优雅关闭只能靠端点触发。
+ * Windows 没有 std.runtime.Signal（..\docs\..\docs\HANDOFF.md §6），优雅关闭只能靠端点触发。
  * 因此 /admin/shutdown **必须限制为本机可访问**，否则任何人都能远程关停服务。
  */
 

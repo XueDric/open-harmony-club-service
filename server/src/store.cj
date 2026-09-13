@@ -621,9 +621,6 @@ public func storeSave(s: Store): Unit {
 
 /* ===================== 查询辅助 ===================== */
 
-public func memberById(s: Store, id: Int64): ?Member {
-    return s.members.get(id)
-}
 
 public func memberByPhone(s: Store, phone: String): ?Member {
     for ((_k, m) in s.members) {
@@ -634,13 +631,7 @@ public func memberByPhone(s: Store, phone: String): ?Member {
     return None
 }
 
-public func deptById(s: Store, id: Int64): ?Department {
-    return s.departments.get(id)
-}
 
-public func planById(s: Store, id: Int64): ?Plan {
-    return s.plans.get(id)
-}
 
 /* 未删除的任务。全项目一致地用它过滤【v1-scope 规则 17】。 */
 public func activeTaskById(s: Store, id: Int64): ?Task {

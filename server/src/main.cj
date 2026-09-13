@@ -8,7 +8,7 @@ package qingzhou
  *
  * 构建：server/build.ps1（cjc 1.1.3 + stdx 1.1.3.1 + 轻舟源码同包编译）
  *
- * 部署约束（deploy-windows-verify.md §3）：
+ * 部署约束（..\docs\deploy-windows-verify.md §3）：
  *   · **cwd 必须是 exe 所在目录**——数据目录与证书都按相对路径读
  *   · 4 个 DLL 必须与 exe 同目录（含两个 OpenSSL 3 DLL，缺失时 crypto 运行时才报错）
  */
@@ -18,15 +18,6 @@ import std.convert.*
 import std.fs.*
 import stdx.encoding.json.*
 
-/* 运行期参数（当前用默认值；服务器信息到位后再接配置文件） */
-public class Options {
-    public var data_dir: String = "data"
-    public var port: UInt16 = 8080
-    public var cert_pem: String = "certs/cert.pem"
-    public var key_pem: String = "certs/key.pem"
-
-    public init() {}
-}
 
 /* 用对象持有 ServerHandle：闭包捕获 var 的语义不可靠，这里显式放进盒子里。 */
 class HandleBox {
@@ -342,7 +333,7 @@ func cmdServe(port: UInt16, dir: String): Int64 {
  * HTTPS 启动。
  *
  * 轻舟的 serveTls(port, certPem, keyPem) 收的是 **PEM 字符串**而不是文件路径，
- * 因此读文件、异常处理都在调用方（见 qingzhou-tls-verification.md 第 3 节的责任转移）。
+ * 因此读文件、异常处理都在调用方（见 ..\docs\qingzhou-tls-verification.md 第 3 节的责任转移）。
  *
  * ⚠ 绝不静默降级：证书或私钥读不到、解析失败时**直接退出**，
  * 不允许 catch 之后回退到明文 serve()——那会让"HTTPS 没起来"变成静默的明文服务。

@@ -1,6 +1,6 @@
 ﻿# 本机 TLS 验证（框架原生 TLS，不用 Nginx）
 #
-# 覆盖 deploy-windows-verify.md 的关卡 3、4 与 TLS 需求文档第 4 节的关键项：
+# 覆盖 ..\docs\deploy-windows-verify.md 的关卡 3、4 与 TLS 需求文档第 4 节的关键项：
 #   1. 证书带 SAN，且 IP SAN 正确（现代客户端完全忽略 CN，只看 subjectAltName）
 #   2. TLS 1.2 握手成功
 #   3. TLS 1.3 握手成功
