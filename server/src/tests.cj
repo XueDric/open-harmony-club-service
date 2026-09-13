@@ -330,6 +330,24 @@ func testStore(t: TR): Unit {
     }
     t.ok("单条坏记录必须报错（M-7）", threw2)
 
+    /*
+     * N-5：idem 也要走 checkLoaded —— 它原先漏了，是 8 张表里唯一的例外。
+     * 影响确实最小（24 小时 TTL 的幂等映射，丢一条最坏是客户端重试时多建一个资源），
+     * 但"例外只存在于代码里"正是后人最容易踩的坑，所以把口径统一成一种。
+     */
+    let idemDir = dir + "-n5"
+    let goodIdem = storeLoad(idemDir)
+    storeSave(goodIdem) /* 先建出目录，再用坏内容覆盖 db.json */
+    let badIdem = "{\"version\":1,\"departments\":[],\"members\":[],\"idem\":[\"这不是一个幂等记录\"]}"
+    File.writeTo(goodIdem.dbFile(), badIdem.toArray())
+    var threw3 = false
+    try {
+        storeLoad(idemDir)
+    } catch (e: Exception) {
+        threw3 = true
+    }
+    t.ok("idem 坏记录也必须报错（N-5）", threw3)
+
     /* P1 M-3：限流状态不落盘 —— 保存后 db.json 里不应出现 login_fail */
     let lf = LoginFail()
     lf.count = 3
@@ -346,6 +364,9 @@ func testStore(t: TR): Unit {
     }
     if (exists(dir + "-m7")) {
         remove(dir + "-m7", recursive: true)
+    }
+    if (exists(dir + "-n5")) {
+        remove(dir + "-n5", recursive: true)
     }
 }
 
@@ -452,6 +473,12 @@ func testPerms(t: TR): Unit {
     sameDeptMember.member_id = 9
     sameDeptMember.target_role = "member"
     sameDeptMember.dept_id = 2
+    /* 「另一位副会长」：member_id 刻意不等于任何操作者本人，用来测**同权之间**的约束。
+     * （sameDeptVp 的 member_id=2 恰好就是 vp 自己，拿它测同权会测成"对自己"。） */
+    let peerVp = Target()
+    peerVp.member_id = 12
+    peerVp.target_role = "vice_president"
+    peerVp.dept_id = 1
 
     t.ok("部长改同部门会长姓名 拒（H-1）", !can(lead, Action.EditMemberName, sameDeptPres))
     t.ok("部长重置同部门会长密码 拒（H-1）", !can(lead, Action.ResetPassword, sameDeptPres))
@@ -464,8 +491,41 @@ func testPerms(t: TR): Unit {
     t.ok("部长改同部门普通成员姓名 允许", can(lead, Action.EditMemberName, sameDeptMember))
     t.ok("部长重置同部门普通成员密码 允许", can(lead, Action.ResetPassword, sameDeptMember))
     t.ok("副会长改会长本人仍拒", !can(vp, Action.EditMemberName, sameDeptPres))
-    t.ok("副会长可改另一位副会长", can(vp, Action.SetRole, sameDeptVp))
-    t.ok("会长不受档位限制", can(pres, Action.ResetPassword, sameDeptPres))
+    /* 同权约束推广（2026-09-14）：改名 / 改角色 / 禁用也一律不可作用于同权或更高权的人。
+     * 注意 sameDeptVp.member_id == vp.id == 2，对 vp 而言那是**自己**——原断言写作
+     * "副会长可改另一位副会长"其实名不副实。现在拆成两条：改自己（自己例外，仍允许）
+     * 与改另一位副会长（同权，拒）。 */
+    t.ok("副会长改自己的角色（自己例外）", can(vp, Action.SetRole, sameDeptVp))
+    t.ok("副会长改另一位副会长的角色 拒（同权）", !can(vp, Action.SetRole, peerVp))
+    t.ok("副会长禁用另一位副会长 拒（同权）", !can(vp, Action.DisableMember, peerVp))
+    t.ok("副会长改另一位副会长的姓名 拒（同权）", !can(vp, Action.EditMemberName, peerVp))
+    t.ok("会长仍可改副会长的角色（未过度收紧）", can(pres, Action.SetRole, peerVp))
+    t.ok("会长仍可禁用副会长（未过度收紧）", can(pres, Action.DisableMember, peerVp))
+    /* N-7：「重置密码**不含本人**」这条约束只能由 checkAccess 的动作语义层拦住——
+     * 会长与副会长的角色分支都是"直接放行"（roleAllows 里 president 一档 return true、
+     * 副会长档只排除 president）。
+     *
+     * 注意 sameDeptPres.member_id == pres.id == 1，对 pres 而言它字面上就是"自己"：
+     * 原先这里写的是 `can(pres, ResetPassword, sameDeptPres)` 且断言为 true，
+     * 也就是"会长可以重置自己"——那正是 N-7 要修掉的行为（会把自己的令牌全部作废，
+     * 表现为"响应 200、自己当场掉线"）。现在改用 sameDeptVp（member_id=2，是别人）
+     * 来测"不受档位限制"。
+     *
+     * 同一对 Target 正好也覆盖副会长：sameDeptVp.member_id == vp.id == 2。 */
+    t.ok("会长重置他人不受档位限制", can(pres, Action.ResetPassword, sameDeptVp))
+    /* 通用规则：不可作用于与自己**同权或更高权**的人 —— N-7 只是它的特例
+     * （对自己而言就是同权）。副会长之间互为同权，原先没有这条约束，
+     * 副会长可以把另一位副会长重置下线 / 降级 / 禁用。 */
+    t.ok("副会长重置另一位副会长（同权）拒", !can(vp, Action.ResetPassword, peerVp))
+    t.eqs("同权被拒的错误码（动作语义层）",
+        checkAccess(vp, Action.ResetPassword, peerVp) ?? "", "FORBIDDEN_ROLE")
+    t.ok("会长重置副会长（更低档）允许", can(pres, Action.ResetPassword, peerVp))
+    t.ok("副会长重置部长（更低档）允许", can(vp, Action.ResetPassword, sameDeptLead))
+    t.ok("会长重置普通成员（更低档）允许", can(pres, Action.ResetPassword, sameDeptMember))
+    t.ok("会长对自己重置 拒（N-7）", !can(pres, Action.ResetPassword, sameDeptPres))
+    t.eqs("会长对自己重置的错误码（N-7）",
+        checkAccess(pres, Action.ResetPassword, sameDeptPres) ?? "", "FORBIDDEN_ROLE")
+    t.ok("副会长对自己重置 拒（N-7）", !can(vp, Action.ResetPassword, sameDeptVp))
     /* 目标档位未知时宁拒不放过 */
     let unknownRole = Target()
     unknownRole.dept_id = 2
@@ -1121,6 +1181,62 @@ func testPlans(t: TR): Unit {
     }
 }
 
+/* ===================== 注册口令节流（N-6） ===================== */
+
+func testRegThrottle(t: TR): Unit {
+    println("- auth 注册口令节流（按 IP + 递增退避）")
+    let dir = "test-data-regthrottle"
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+    let s = storeLoad(dir)
+    let now = nowEpoch()
+
+    /* 同一 IP 错 9 次还没锁，第 10 次触发锁定 */
+    var i: Int64 = 0
+    while (i < REG_FAIL_LIMIT - 1) {
+        regFailBump(s, "10.0.0.1")
+        i += 1
+    }
+    t.ok("错 9 次还没锁", !regLocked(s, "10.0.0.1", now))
+    regFailBump(s, "10.0.0.1")
+    t.ok("第 10 次触发锁定", regLocked(s, "10.0.0.1", now))
+
+    /* 另一个 IP 完全不受影响 —— 这正是与旧全局锁最关键的区别（N-6 的核心收益） */
+    t.ok("另一个 IP 不受影响", !regLocked(s, "10.0.0.2", now))
+    i = 0
+    while (i < REG_FAIL_LIMIT - 1) {
+        regFailBump(s, "10.0.0.2")
+        i += 1
+    }
+    t.ok("两个 IP 各数各的", !regLocked(s, "10.0.0.2", now))
+
+    /* 递增退避：首次 5 分钟 */
+    let st1 = s.reg_fail.get("10.0.0.1") ?? RegFail()
+    let firstLock = st1.locked_until - now
+    t.ok("首次锁 5 分钟", (firstLock >= REG_FAIL_LOCK_BASE - 2) && (firstLock <= REG_FAIL_LOCK_BASE + 2))
+    t.ok("锁定期内判定为锁", regLocked(s, "10.0.0.1", now + 60))
+    t.ok("锁到期自动解除", !regLocked(s, "10.0.0.1", now + REG_FAIL_LOCK_BASE + 2))
+
+    /* 同一 IP 再触发一次 → 翻倍 */
+    i = 0
+    while (i < REG_FAIL_LIMIT) {
+        regFailBump(s, "10.0.0.1")
+        i += 1
+    }
+    let st2 = s.reg_fail.get("10.0.0.1") ?? RegFail()
+    t.ok("第二次锁更久（翻倍）", st2.locked_until - nowEpoch() > firstLock)
+    t.ok("退避有上限（1 小时）", regLockSeconds(99) == REG_FAIL_LOCK_MAX)
+
+    /* 注册成功会清掉该 IP 的失败状态 */
+    s.reg_fail.remove("10.0.0.1")
+    t.ok("成功后该 IP 不再被锁", !regLocked(s, "10.0.0.1", nowEpoch()))
+
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+}
+
 /* ===================== 入口 ===================== */
 
 public func runTests(): Int64 {
@@ -1132,6 +1248,7 @@ public func runTests(): Int64 {
     testPassword(t)
     testStore(t)
     testPerms(t)
+    testRegThrottle(t)
     testViews(t)
     testPart3Views(t)
     testPaging(t)

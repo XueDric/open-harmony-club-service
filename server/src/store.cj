@@ -104,6 +104,17 @@ public class LoginFail {
     public var locked_until: Int64 = 0
 }
 
+/*
+ * 注册口令的失败状态（N-6）。**按客户端 IP 各存一份**，不再是一个全局计数。
+ * lock_level 记录"这个 IP 已经被锁过几次"，锁定时长按它翻倍（递增退避）。
+ */
+public class RegFail {
+    public var count: Int64 = 0
+    public var first_at: Int64 = 0
+    public var locked_until: Int64 = 0
+    public var lock_level: Int64 = 0
+}
+
 /* ===================== Store ===================== */
 
 public class Store {
@@ -125,9 +136,9 @@ public class Store {
      * 重启后计数清零可以接受 —— 攻击者没有让服务重启的手段。
      */
     public var login_fail: HashMap<String, LoginFail> = HashMap<String, LoginFail>()
-    public var reg_fail_count: Int64 = 0
-    public var reg_fail_first_at: Int64 = 0
-    public var reg_fail_until: Int64 = 0
+    /* N-6：注册口令节流从"一个全局计数"改成**按客户端 IP**（key = IP，不含端口）。
+     * 拿不到对端地址时 key 为空串，退化为全局锁——总比完全不锁好。 */
+    public var reg_fail: HashMap<String, RegFail> = HashMap<String, RegFail>()
 
     public var next_dept: Int64 = 1
     public var next_member: Int64 = 1
@@ -357,7 +368,13 @@ public func storeLoad(dir: String): Store {
             let tokenArr = arrOf(r, "tokens")
             s.tokens = tokenArrFromJson(r, "tokens")
             checkLoaded("tokens", tokenArr, s.tokens.size, file)
+            /* N-5：idem 原先漏了 checkLoaded，是 8 张表里唯一的例外。
+             * 它的影响确实最小（24 小时 TTL 的幂等映射，丢一条最坏是客户端重试时
+             * 多建一个资源），但"例外只存在于代码里"正是后人最容易踩的坑——
+             * 口径统一成一种，读代码的人就不必再猜哪张表特殊。 */
+            let idemArr = arrOf(r, "idem")
             s.idem = idemArrFromJson(r, "idem")
+            checkLoaded("idem", idemArr, s.idem.size, file)
             /* login_fail 不再从文件读（P1 M-3：短时效限流状态只留内存）。
              * 旧文件里的 login_fail 字段被忽略，不影响启动。 */
             return s

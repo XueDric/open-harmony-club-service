@@ -61,7 +61,7 @@ function Call-Api([string]$method, [string]$path, $body = $null, [string]$token 
         $r = Invoke-WebRequest @p
         $j = $null
         if ($r.Content) { try { $j = $r.Content | ConvertFrom-Json } catch { } }
-        return @{ status = [int]$r.StatusCode; json = $j; raw = [string]$r.Content }
+        return @{ status = [int]$r.StatusCode; json = $j; raw = [string]$r.Content; headers = $r.Headers }
     } catch {
         # PS 5.1：非 2xx 会抛异常。响应体优先取 ErrorDetails.Message——
         # Invoke-WebRequest 已经把响应流读走了，直接 GetResponseStream() 会拿到空串。
@@ -79,7 +79,9 @@ function Call-Api([string]$method, [string]$path, $body = $null, [string]$token 
         if ($null -ne $resp) { $status = [int]$resp.StatusCode }
         $j = $null
         if ($txt) { try { $j = $txt | ConvertFrom-Json } catch { } }
-        return @{ status = $status; json = $j; raw = $txt }
+        $hdrs = @{}
+        if ($null -ne $resp) { $hdrs = $resp.Headers }
+        return @{ status = $status; json = $j; raw = $txt; headers = $hdrs }
     }
 }
 
@@ -495,6 +497,44 @@ try {
     Check "部长重置外部门成员密码 -> 403 FORBIDDEN_NOT_IN_DEPT" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_NOT_IN_DEPT")) "status=$($r.status) code=$(ErrCode $r)"
     $r = Call-Api "POST" "/api/v1/members/$presId/reset-password" $null $leadToken
     Check "部长重置会长密码 -> 403" ($r.status -eq 403) "status=$($r.status) code=$(ErrCode $r)"
+
+    # N-7：reset-password 是"管理员救济动作"，**不含本人** —— 对会长/副会长同样成立。
+    # 他们的角色分支是"直接放行"，所以只有动作语义层拦得住；而这条路径收尾会
+    # revokeOtherTokens(s, tgt.id, "") 把目标的所有令牌作废，对自己执行就是
+    # "响应 200、自己当场掉线"。下面两条必须成对：既要有 403，也要证明会长的 token
+    # 没被误伤（否则"成功即掉线"会以紧跟着的 401 形式溜过去）。
+    $r = Call-Api "POST" "/api/v1/members/$presId/reset-password" $null $presToken
+    Check "会长对自己重置密码 -> 403 FORBIDDEN_ROLE（N-7）" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "GET" "/api/v1/auth/me" $null $presToken
+    Check "会长自己的令牌仍然有效（N-7：没有成功后掉线）" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$vpId/reset-password" $null $vpToken
+    Check "副会长对自己重置密码 -> 403（N-7）" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+
+    # 「不可重置与自己同权或更高权的人」——这条通用规则把 N-7（对自己即同权）一并覆盖。
+    # 现有成员里只有一个副会长，所以临时造一个同权对照（13900000019 这个号段未被占用）。
+    $r = New-Account "13900000019" "同权副会长" "peerpw123" $regCode
+    $peerId = $r.json.data.member.id
+    $r = Call-Api "POST" "/api/v1/members/$peerId/assign" @{ dept_id = 1; role = "vice_president" } $presToken
+    Check "造第二个副会长（同权对照）-> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$peerId/reset-password" $null $vpToken
+    Check "副会长重置另一位副会长（同权）-> 403 FORBIDDEN_ROLE" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$peerId/reset-password" $null $presToken
+    Check "会长重置副会长（更低档）-> 200（未过度收紧）" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+
+    # 同权约束推广到改名 / 改角色 / 禁用（2026-09-14）：
+    # 只保护重置密码是不够的——副会长原本可以把**另一位副会长**降级为 member 或直接禁用。
+    $r = Call-Api "PATCH" "/api/v1/members/$peerId" @{ role = "member" } $vpToken
+    Check "副会长把另一位副会长降级 -> 403 FORBIDDEN_ROLE" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$peerId/disable" $null $vpToken
+    Check "副会长禁用另一位副会长 -> 403 FORBIDDEN_ROLE" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PATCH" "/api/v1/members/$peerId" @{ name = "被同僚改掉的名字" } $vpToken
+    Check "副会长改另一位副会长的姓名 -> 403 FORBIDDEN_ROLE" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+    # 反证：会长对这些目标仍然放行（没有过度收紧），且会长令牌未被误伤
+    $r = Call-Api "PATCH" "/api/v1/members/$peerId" @{ role = "vice_president" } $presToken
+    Check "会长改副会长角色 -> 200（未过度收紧）" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "GET" "/api/v1/auth/me" $null $presToken
+    Check "会长令牌仍然有效（推广未误伤）" ($r.status -eq 200) "status=$($r.status)"
+
     $r = Call-Api "POST" "/api/v1/depts" @{ name = "部长想建的部门" } $leadToken
     Check "部长新建部门 -> 403" ($r.status -eq 403) "status=$($r.status)"
     $r = Call-Api "POST" "/api/v1/members/$stillId/assign" @{ dept_id = $deptOps; role = "member" } $leadToken
@@ -600,6 +640,19 @@ try {
     Check "不存在的链接也有 dept 字段（L-3）" ($null -ne $r.json.data.dept)
     $r = Call-Api "GET" "/join/$linkToken"
     Check "停用后的落地页提示失效" ($r.raw -like "*失效*") "status=$($r.status)"
+
+    # N-1 / N-9：落地页是本项目唯一的 HTML 输出。
+    # N-1：部门名只校验过"非空"，直接拼进 HTML 就是注入点 —— 造一个带标签的部门名，
+    #      断言页面里**没有**原始的 <script>，而是实体形式 &lt;script&gt;。
+    # N-9：落地页必须带 CSP，一行 default-src 'none' 就能让漏网的脚本不执行。
+    $r = Call-Api "POST" "/api/v1/depts" @{ name = "<script>alert(1)</script>" } $presToken
+    Check "创建含标签的部门 -> 201（N-1 前置）" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r)"
+    $evilDept = $r.json.data.dept.id
+    $r = Call-Api "POST" "/api/v1/dept-invite-links" @{ dept_id = $evilDept } $presToken
+    $evilToken = [string]$r.json.data.token
+    $r = Call-Api "GET" "/join/$evilToken"
+    Check "落地页转义了部门名（N-1）" (($r.status -eq 200) -and ($r.raw -notlike "*<script>*") -and ($r.raw -like "*&lt;script&gt;*")) "status=$($r.status) raw=$($r.raw)"
+    Check "落地页带 CSP 响应头（N-9）" ([string]$r.headers["content-security-policy"] -like "*default-src*") "csp=$([string]$r.headers['content-security-policy'])"
 
     # ---------- 15. 任务：创建与幂等 ----------
     Write-Host ""
@@ -982,6 +1035,23 @@ try {
     Check "重启后 pending 账号仍在（锁定已过期？此处应为 429 或 200）" (($r.status -eq 200) -or ($r.status -eq 429)) "status=$($r.status)"
     $r = Call-Api "GET" "/health"
     Check "重启后 /health 正常" ($r.status -eq 200)
+
+    # ---------- 25. 注册口令节流（按 IP + 递增退避，N-6） ----------
+    # 放在最后一段：它会把本机 IP 锁住，之后再打注册都会 429。
+    # 手机号用没被占用的号段；错口令在"手机号查重"之前就被拒，不会留下脏数据。
+    Write-Host ""
+    Write-Host "[25] 注册口令节流（按客户端 IP，不再是全局锁）"
+    for ($i = 1; $i -le 10; $i++) {
+        $r = Call-Api "POST" "/api/v1/auth/register" @{ register_code = "WRONGCODE"; phone = "13900000100"; name = "节流探针"; password = "throttle12" }
+    }
+    Check "错口令第 10 次 -> 400（此时还没锁）" ($r.status -eq 400) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/auth/register" @{ register_code = "WRONGCODE"; phone = "13900000100"; name = "节流探针"; password = "throttle12" }
+    Check "第 11 次 -> 429 TOO_MANY_ATTEMPTS（按 IP 锁定）" (($r.status -eq 429) -and ((ErrCode $r) -eq "TOO_MANY_ATTEMPTS")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/auth/register" @{ register_code = $regCode; phone = "13900000101"; name = "锁定期正确口令"; password = "throttle12" }
+    Check "锁定期间正确口令也被拒 -> 429（N-6）" (($r.status -eq 429) -and ((ErrCode $r) -eq "TOO_MANY_ATTEMPTS")) "status=$($r.status) code=$(ErrCode $r)"
+    # 反证：锁只作用于注册，不影响其它接口
+    $r = Call-Api "GET" "/health"
+    Check "锁定期间 /health 不受影响（锁只作用于注册）" ($r.status -eq 200) "status=$($r.status)"
 
     Stop-Server $proc
 } finally {

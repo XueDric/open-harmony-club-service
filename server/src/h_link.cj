@@ -59,16 +59,28 @@ public func handleJoinLanding(ctx: Context, s: Store): Unit {
     } else {
         joinPageHtml("链接已失效", "这个招募链接已被停用或不存在，请向管理员索取新的链接。")
     }
-    ctx.header("content-type", "text/html; charset=utf-8").status(200).body(html)
+    /* N-9：落地页是本项目唯一一处 HTML 输出，加一行 CSP。
+     * 该页只有内联 style 属性、没有脚本也没有外部资源，所以 default-src 'none'
+     * 不会破坏显示；即使将来哪一处漏了转义（N-1），注入的脚本也执行不了。 */
+    ctx.header("content-type", "text/html; charset=utf-8")
+        .header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'")
+        .status(200)
+        .body(html)
 }
 
-/* 落地页 HTML：不用模板引擎，也不引入任何外部资源（离线可看）。 */
+/* 落地页 HTML：不用模板引擎，也不引入任何外部资源（离线可看）。
+ *
+ * N-1：title / tip 一律先过 htmlEscape —— 页面上要显示部门名，而部门名只校验过
+ * "非空"，直接拼接就是一个 HTML 注入点。转义在这里做（而不是调用处），
+ * 将来谁再往这两个参数里塞用户数据也自动是安全的。 */
 func joinPageHtml(title: String, tip: String): String {
+    let t = htmlEscape(title)
+    let p = htmlEscape(tip)
     return "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">" +
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
-        "<title>${title}</title></head>" +
+        "<title>${t}</title></head>" +
         "<body style=\"font-family:sans-serif;padding:2rem;line-height:1.8;color:#222\">" +
-        "<h2>${title}</h2><p>${tip}</p>" +
+        "<h2>${t}</h2><p>${p}</p>" +
         "<p style=\"color:#888;font-size:.9rem\">社团管理工具</p>" +
         "</body></html>"
 }

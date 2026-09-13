@@ -35,6 +35,48 @@ public func peerOf(ctx: Context): String {
     }
 }
 
+/*
+ * 取客户端 IP（**不含端口**）—— N-6 的注册节流按它分桶。
+ *
+ * 实测 remoteAddr 的文本是 "IP:端口"（例：127.0.0.1:14764），所以必须剥端口；
+ * 否则同一台机器每个连接都是新 key，限流形同虚设。
+ * IPv6 常见形态是 "[::1]:14764"（取方括号内），无方括号时按最后一个冒号切。
+ * 拿不到地址时返回空串，调用方自行兜底（当前会退化为全局锁）。
+ */
+public func clientIpOf(ctx: Context): String {
+    let p = peerOf(ctx)
+    let n = p.size
+    if (n == 0) {
+        return ""
+    }
+    let a = p.toArray()
+    /* 先找最后一个 ']'：IPv6 的 [::1]:port 形式 */
+    var rb: Int64 = -1
+    var i: Int64 = 0
+    while (i < n) {
+        if (a[i] == 93) {
+            rb = i
+        }
+        i += 1
+    }
+    if (rb > 0) {
+        return String.fromUtf8(a[1..rb])
+    }
+    /* 再找最后一个 ':'，切掉端口 */
+    var cb: Int64 = -1
+    i = 0
+    while (i < n) {
+        if (a[i] == 58) {
+            cb = i
+        }
+        i += 1
+    }
+    if (cb > 0) {
+        return String.fromUtf8(a[0..cb])
+    }
+    return p
+}
+
 public func isLocalPeer(ctx: Context): Bool {
     let p = peerOf(ctx)
     if (p.size == 0) {

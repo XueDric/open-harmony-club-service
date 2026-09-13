@@ -10,10 +10,11 @@ package qingzhou
  * 十几个接口各写一遍权限，一定会漏掉某个组合，而权限漏洞是社团工具里
  * 最难发现、后果最难受的一类缺陷。
  *
- * 判定三层（依次）：
+ * 判定四层（依次）：
  *   1. 账号状态      pending → MEMBER_PENDING；disabled → MEMBER_DISABLED
- *   2. 角色维度      这个角色能不能做这个动作 → FORBIDDEN_ROLE
- *   3. 部门范围      目标资源在不在自己的范围内 → FORBIDDEN_NOT_IN_DEPT
+ *   2. 动作语义      这个动作对目标有没有额外约束（如"不能重置同权/更高权的人"）→ FORBIDDEN_ROLE
+ *   3. 角色维度      这个角色能不能做这个动作 → FORBIDDEN_ROLE
+ *   4. 部门范围      目标资源在不在自己的范围内 → FORBIDDEN_NOT_IN_DEPT
  *
  * 角色口径（v1-scope §3.4.3，v0.6 起）：
  *   会长        全部
@@ -210,6 +211,54 @@ public func checkAccess(m: Member, a: Action, t: Target): ?String {
     }
     if (m.status == "disabled") {
         return Some("MEMBER_DISABLED")
+    }
+    /* 2. 动作语义层（不看部门范围，但要读角色档位）
+     *
+     * 「不可作用于与自己**同权或更高权**的人」（2026-09-14 定，当天从"仅重置密码"
+     * **推广到改名 / 改角色 / 禁用**）。
+     *
+     * 只保护"重置密码"是不够的：副会长档在 roleAllows 里对
+     * EditMemberName / SetRole / DisableMember 只排除了 president，
+     * 于是**副会长可以把另一位副会长降级为 member，或直接禁用**——
+     * 同权之间本就不该能互相处置。现在这几类动作一起受这条约束。
+     *
+     * 规则本身一次覆盖三种情况：
+     *   · 自己与自己同权 → "重置密码"连自己也禁（见下）；其余动作对自己网开一面；
+     *   · 副会长与副会长同权 → 不能互相重置 / 降级 / 禁用 / 改名；
+     *   · 会长档位最高，除自己外无人与之同权 → 会长仍能作用于任何更低档的人。
+     *
+     * 为什么不用 outranks()：它对 president 直接短路返回 true，
+     * 于是"会长作用于会长自己"会被放行 —— 那正是 N-7 要拦的那一条。
+     *
+     * 为什么放在这里而不是 handler 里：会长与副会长的角色分支都是"直接放行"
+     * （roleAllows 里 president 一档 `return true`、副会长档只排除 president），
+     * 只有这一层拦得住他们；而"权限判定只有一处"是本项目的铁律。
+     *
+     * 判定用「目标 id 就是操作者 id」而不是只看 t.is_self：is_self 是派生的便利
+     * 标志，新调用点忘填就静默失效；member_id 是必填事实。 */
+    let peerForbidden = match (a) {
+        case ResetPassword => true
+        case SetRole => true
+        case DisableMember => true
+        case EditMemberName => true
+        case _ => false
+    }
+    let isSelf = t.is_self || (t.member_id > 0 && t.member_id == m.id)
+    if (peerForbidden && !isSelf) {
+        if (roleRank(t.target_role) >= roleRank(m.role)) {
+            return Some("FORBIDDEN_ROLE")
+        }
+    }
+    /* 「重置密码」额外连**自己**也不许（N-7）：它是管理员救济动作，
+     * 而这条路径收尾会 revokeOtherTokens(s, tgt.id, "") 把目标的**全部**令牌作废，
+     * 对本人执行就是"响应 200、自己当场掉线"（客户端拿到成功却立刻 401）。
+     * 改自己的姓名 / 角色 / 启停则是既有口径（且属自伤，没有提权收益），不受这条影响。 */
+    match (a) {
+        case ResetPassword =>
+            if (isSelf) {
+                return Some("FORBIDDEN_ROLE")
+            }
+        case _ => ()
     }
     if (!roleAllows(m.role, a, t)) {
         return Some("FORBIDDEN_ROLE")

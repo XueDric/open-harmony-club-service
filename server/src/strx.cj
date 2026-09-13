@@ -14,6 +14,8 @@ package qingzhou
  * ⚠ Cangjie 的 String.size 是 **字节数**，不是字符数。中文一个字 3 字节。
  */
 
+import std.collection.*   /* htmlEscape 要 ArrayList —— 忘了就是 undeclared identifier（API-NOTES 第 5 条） */
+
 /* s 是否以 prefix 开头（逐字节，大小写敏感）。 */
 public func startsWithAscii(s: String, prefix: String): Bool {
     let a = s.toArray()
@@ -103,6 +105,44 @@ public func subFrom(s: String, start: Int64): String {
 /* 去除首尾 ASCII 空白后是否为空。 */
 public func isBlank(s: String): Bool {
     return s.trimAscii().size == 0
+}
+
+/*
+ * HTML 转义（N-1）：把 `&` `<` `>` `"` `'` 换成实体，其余字节原样透传。
+ *
+ * 用途：链接落地页（h_link.cj）是本项目**唯一一处 HTML 输出**，页面上要显示
+ * 部门名，而部门名只校验过"非空"。不转义的话，一个叫 `<script>…</script>` 的
+ * 部门名会被原样吐进页面。
+ *
+ * 为什么逐字节写：探针在 cjc 1.1.3 上只确认了 String 的 toArray() / fromUtf8()
+ * 等少量入口，**没有 replace()**（本文件开头那段说明就是为此）。按字节替换对
+ * UTF-8 是安全的：这 5 个字符都是单字节 ASCII，而多字节序列的续字节一律 >= 0x80，
+ * 永远不会撞上它们，所以中文部门名不会被拆坏。
+ */
+public func htmlEscape(s: String): String {
+    let out = ArrayList<UInt8>()
+    for (b in s.toArray()) {
+        var rep = ""
+        if (b == 38) {          /* & —— 必须最先处理，否则会二次转义后面生成的实体 */
+            rep = "&amp;"
+        } else if (b == 60) {   /* < */
+            rep = "&lt;"
+        } else if (b == 62) {   /* > */
+            rep = "&gt;"
+        } else if (b == 34) {   /* " */
+            rep = "&quot;"
+        } else if (b == 39) {   /* ' */
+            rep = "&#39;"
+        }
+        if (rep.size > 0) {
+            for (x in rep.toArray()) {
+                out.add(x)
+            }
+        } else {
+            out.add(b)
+        }
+    }
+    return String.fromUtf8(out.toArray())
 }
 
 /*

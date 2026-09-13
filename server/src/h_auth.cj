@@ -20,10 +20,17 @@ public let LOGIN_FAIL_WINDOW: Int64 = 900
 public let LOGIN_FAIL_LIMIT: Int64 = 5
 public let LOGIN_FAIL_LOCK: Int64 = 900
 
-/* 注册口令限流参数：窗口 15 分钟，错 10 次锁 15 分钟（见 handleRegister）。 */
+/*
+ * 注册口令限流参数（N-6，2026-09-14 改）。
+ * 窗口 15 分钟内错 10 次即锁该 IP；锁定时长**递增退避**：首次 5 分钟，
+ * 同一 IP 每再触发一次翻倍，上限 1 小时。
+ * 为什么不再固定 15 分钟：固定值让封锁成本恒定（每 15 分钟丢 10 个错口令就能一直锁着），
+ * 递增退避让重复违规越来越贵。
+ */
 public let REG_FAIL_WINDOW: Int64 = 900
 public let REG_FAIL_LIMIT: Int64 = 10
-public let REG_FAIL_LOCK: Int64 = 900
+public let REG_FAIL_LOCK_BASE: Int64 = 300
+public let REG_FAIL_LOCK_MAX: Int64 = 3600
 
 /*
  * 登录失败表清理（P1 M-3）。
@@ -45,22 +52,66 @@ func pruneLoginFail(s: Store, now: Int64): Unit {
     }
 }
 
+/* 递增退避：level = 该 IP 已被锁过的次数。300 → 600 → 1200 → 2400 → 上限 3600。 */
+func regLockSeconds(level: Int64): Int64 {
+    var v = REG_FAIL_LOCK_BASE
+    var i: Int64 = 0
+    while (i < level && v < REG_FAIL_LOCK_MAX) {
+        v = v * 2
+        i += 1
+    }
+    if (v > REG_FAIL_LOCK_MAX) {
+        v = REG_FAIL_LOCK_MAX
+    }
+    return v
+}
+
+/* 该 IP 此刻是否处于锁定期。 */
+func regLocked(s: Store, ip: String, now: Int64): Bool {
+    match (s.reg_fail.get(ip)) {
+        case Some(st) => return st.locked_until > now
+        case None => return false
+    }
+}
+
+/* 节流表清理（与 pruneLoginFail 同构）：超过 500 条时回收"窗口已过且已解锁"的 IP。 */
+func pruneRegFail(s: Store, now: Int64): Unit {
+    if (s.reg_fail.size <= 500) {
+        return
+    }
+    let doomed = ArrayList<String>()
+    for ((k, st) in s.reg_fail) {
+        if (st.locked_until <= now && now - st.first_at > REG_FAIL_WINDOW) {
+            doomed.add(k)
+        }
+    }
+    for (k in doomed) {
+        s.reg_fail.remove(k)
+    }
+}
+
 /*
- * 注册口令失败计数（P1 M-2）。窗口内累计到上限就锁定，锁定期间注册一律 429。
+ * 注册口令失败计数（P1 M-2；N-6 从全局计数改为**按 IP**）。
+ * 窗口内累计到上限就锁定**该 IP**，锁定期间该 IP 的注册一律 429——
+ * 其它 IP 完全不受影响，这是与旧全局锁最关键的区别。
  * 与 login_fail 同理不落盘：失败路径上写整库等于给攻击者一个放大杠杆。
  */
-func regFailBump(s: Store): Unit {
+func regFailBump(s: Store, ip: String): Unit {
     let now = nowEpoch()
-    if (s.reg_fail_first_at == 0 || now - s.reg_fail_first_at > REG_FAIL_WINDOW) {
-        s.reg_fail_first_at = now
-        s.reg_fail_count = 0
+    let st = s.reg_fail.get(ip) ?? RegFail()
+    if (st.first_at == 0 || now - st.first_at > REG_FAIL_WINDOW) {
+        st.first_at = now
+        st.count = 0
     }
-    s.reg_fail_count += 1
-    if (s.reg_fail_count >= REG_FAIL_LIMIT) {
-        s.reg_fail_until = now + REG_FAIL_LOCK
-        s.reg_fail_count = 0
-        s.reg_fail_first_at = now
+    st.count += 1
+    if (st.count >= REG_FAIL_LIMIT) {
+        st.locked_until = now + regLockSeconds(st.lock_level)
+        st.lock_level += 1
+        st.count = 0
+        st.first_at = now
     }
+    s.reg_fail[ip] = st
+    pruneRegFail(s, now)
 }
 
 /* 登录/注册成功的统一响应体。 */
@@ -104,22 +155,29 @@ public func handleRegister(ctx: Context, s: Store): Unit {
         if (s.register_code.size == 0) {
             throw apiErrMsg("REGISTER_CODE_INVALID", "社团尚未设置注册口令，请联系会长")
         }
-        /* 限流（P1 M-2）：注册口令是**全社团共用的一个短串**，原先可以无限次试。
-         * 这里做全局计数：15 分钟内错 10 次就锁 15 分钟。
-         * 为什么是全局而不是按 IP：轻舟没有暴露可信客户端 IP，伪造 X-Forwarded-For
-         * 就能绕过；而注册是低频动作，全局锁的误伤可接受。
-         * 代价要写清楚：攻击者可以用它把正常注册挡在门外（DoS），
-         * 所以阈值放宽到 10 次，且锁只影响注册、不影响登录与其它接口。 */
-        if (s.reg_fail_until > nowEpoch()) {
+        /* 限流（P1 M-2 / N-6）：注册口令是**全社团共用的一个短串**，必须限制尝试次数。
+         *
+         * 2026-09-14 从"全局计数"改成**按客户端 IP**：
+         *   · 旧口径说"轻舟没有暴露可信客户端 IP"——这句是错的。轻舟通过
+         *     ctx.http.request.remoteAddr 给出 **TCP 对端地址**，那是传输层事实，
+         *     客户端伪造不了（可伪造的是 X-Forwarded-For 头，而本项目直连、不读它）；
+         *     h_ops.cj 的 peerOf / clientIpOf 就是取它。
+         *   · 旧全局锁的真实代价：攻击者每 15 分钟丢 10 个错口令就能把**所有人**
+         *     挡在注册门外。改成按 IP 后，被锁的只有攻击者自己那个地址。
+         *   · 锁定改为**递增退避**（见 regLockSeconds），重复违规成本上升。
+         *
+         * 已知局限（写清楚，别高估）：NAT / 校园网出口下整个社团可能共用一个公网 IP，
+         * 那时按 IP 会近似退化成全局锁；拿不到对端地址时 key 为空串，同样退化为全局。
+         * 两种情况都比"无条件全局锁"更窄，且锁只影响注册、不影响登录与其它接口。 */
+        let ip = clientIpOf(ctx)
+        if (regLocked(s, ip, nowEpoch())) {
             throw apiErr("TOO_MANY_ATTEMPTS")
         }
         if (!constantTimeEq(rc, s.register_code)) {
-            regFailBump(s)
+            regFailBump(s, ip)
             throw apiErr("REGISTER_CODE_INVALID")
         }
-        s.reg_fail_count = 0
-        s.reg_fail_first_at = 0
-        s.reg_fail_until = 0
+        s.reg_fail.remove(ip)
         if (memberByPhone(s, phone).isSome()) {
             throw apiErrFields("ALREADY_EXISTS", "该手机号已注册", oneField("phone", "该手机号已注册"))
         }
