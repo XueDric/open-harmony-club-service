@@ -41,9 +41,11 @@ func usage(): Unit {
     println("用法:")
     println("  club-server init-admin <手机号> <初始密码> [数据目录]   初始化首任会长与 4 个组织（仅空库可执行）")
     println("  club-server serve [端口] [数据目录]                    启动 HTTP 服务（默认 8080 / data）")
+    println("  club-server serve-tls [端口] [数据目录] [证书] [私钥]  启动 HTTPS（默认 8443 / data / certs/cert.pem / certs/key.pem）")
     println("  club-server test                                       运行单测")
     println("")
     println("数据目录默认 data/（相对当前工作目录）。冒烟测试用独立目录，避免碰正式数据。")
+    println("证书必须是**带 SAN** 的自签证书（现代客户端只看 subjectAltName，完全忽略 CN）。")
 }
 
 /* 加载数据；失败就退出——绝不带着空库继续跑。 */
@@ -336,6 +338,67 @@ func cmdServe(port: UInt16, dir: String): Int64 {
     return 0
 }
 
+/*
+ * HTTPS 启动。
+ *
+ * 轻舟的 serveTls(port, certPem, keyPem) 收的是 **PEM 字符串**而不是文件路径，
+ * 因此读文件、异常处理都在调用方（见 qingzhou-tls-verification.md 第 3 节的责任转移）。
+ *
+ * ⚠ 绝不静默降级：证书或私钥读不到、解析失败时**直接退出**，
+ * 不允许 catch 之后回退到明文 serve()——那会让"HTTPS 没起来"变成静默的明文服务。
+ */
+func cmdServeTls(port: UInt16, dir: String, certPath: String, keyPath: String): Int64 {
+    let loaded = loadOrExit(dir)
+    let s = match (loaded) {
+        case Some(x) => x
+        case None => return 1
+    }
+    if (presidentCount(s) == 0) {
+        println("[WARN] 当前没有任何会长账号，请先执行：club-server init-admin <手机号> <初始密码>")
+    }
+    if (!exists(certPath)) {
+        println("[FATAL] 找不到证书：${certPath}")
+        return 1
+    }
+    if (!exists(keyPath)) {
+        println("[FATAL] 找不到私钥：${keyPath}")
+        return 1
+    }
+    var certPem = ""
+    var keyPem = ""
+    try {
+        certPem = String.fromUtf8(File.readFrom(certPath))
+        keyPem = String.fromUtf8(File.readFrom(keyPath))
+    } catch (e: Exception) {
+        println("[FATAL] 证书或私钥读取失败：${e.message}")
+        return 1
+    }
+
+    let box = HandleBox()
+    let app = buildApp(s, box)
+    println("社团管理工具 · 服务端 v${APP_VERSION}  (HTTPS)")
+    println("监听 :${port}  数据目录 ${s.dir}  成员 ${s.members.size} 人")
+    println("证书 ${certPath}")
+    println("私钥 ${keyPath}（内容不会写入日志）")
+
+    var handle: ?ServerHandle = None
+    try {
+        handle = Some(app.serveTls(port, certPem, keyPem))
+    } catch (e: Exception) {
+        println("[FATAL] TLS 启动失败：${e.message}")
+        println("        （PEM 无法解析时框架会抛异常；这里不做任何明文回退）")
+        return 1
+    }
+    match (handle) {
+        case Some(h) =>
+            box.handle = Some(h)
+            h.wait()
+        case None => return 1
+    }
+    println("服务已停止")
+    return 0
+}
+
 main(args: Array<String>): Int64 {
     if (args.size == 0) {
         usage()
@@ -372,6 +435,33 @@ main(args: Array<String>): Int64 {
             "data"
         }
         return cmdServe(port, dir)
+    }
+    if (args[0] == "serve-tls") {
+        var port: UInt16 = 8443
+        if (args.size > 1) {
+            try {
+                port = UInt16.parse(args[1])
+            } catch (e: Exception) {
+                println("端口不合法: ${args[1]}")
+                return 1
+            }
+        }
+        let dir = if (args.size > 2) {
+            args[2]
+        } else {
+            "data"
+        }
+        let certPath = if (args.size > 3) {
+            args[3]
+        } else {
+            "certs/cert.pem"
+        }
+        let keyPath = if (args.size > 4) {
+            args[4]
+        } else {
+            "certs/key.pem"
+        }
+        return cmdServeTls(port, dir, certPath, keyPath)
     }
     usage()
     return 1

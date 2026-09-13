@@ -34,10 +34,43 @@ cd build
 
 | 命令 | 说明 |
 | --- | --- |
-| `club-server serve [端口] [数据目录]` | 启动服务（默认 `8080` / `data`） |
+| `club-server serve [端口] [数据目录]` | 启动 HTTP（默认 `8080` / `data`） |
+| `club-server serve-tls [端口] [数据目录] [证书] [私钥]` | 启动 HTTPS（默认 `8443` / `data` / `certs/cert.pem` / `certs/key.pem`） |
 | `club-server init-admin <手机号> <初始密码> [数据目录]` | 预置首任会长 + 4 个组织（仅空库可执行） |
 | `club-server test` | 运行单测 |
 | `POST /admin/shutdown` | 优雅关闭（**仅本机可访问**；Windows 无信号机制） |
+
+### 本机跑 HTTPS（框架原生 TLS，不用 Nginx）
+
+```powershell
+# 1. 生成**带 SAN** 的自签证书（现代客户端完全忽略 CN，只看 subjectAltName）
+$openssl = "D:\Program Files\Git\usr\bin\openssl.exe"
+& $openssl req -x509 -newkey rsa:2048 -nodes `
+  -keyout certs\key.pem -out certs\cert.pem -days 3650 `
+  -subj "/C=CN/O=Club/CN=127.0.0.1" `
+  -addext "subjectAltName=IP:127.0.0.1,DNS:localhost"
+
+# 2. 起 HTTPS
+cd build
+.\club-server.exe init-admin 13800000000 你的密码123 data
+.\club-server.exe serve-tls 8443 data ..\certs\cert.pem ..\certs\key.pem
+
+# 3. 完整验证（协议版本、SAN、真证书校验、HTTPS 接口、明文反证）
+powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\tls-check.ps1
+```
+
+> 部署到公网时把 SAN 里的 `127.0.0.1` 换成真实公网 IP，并用
+> `openssl verify -CAfile certs\cert.pem -verify_ip <公网IP> certs\cert.pem` 自检。
+> 私钥绝不入库：`server/certs` 与 `server/dist` 都已在 `.gitignore` 中。
+
+### 生成部署包
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-package.ps1
+```
+
+产出 `server\dist\club-server\`：exe + 4 个 DLL + `certs\` + 启动脚本 + 部署说明，约 **18.8 MB**。
+整个目录拷到服务器即可运行（同平台，服务器不需要装编译器）。
 
 ---
 
@@ -49,7 +82,7 @@ cd build
 | **M2 组织与成员** | Part 3 的 **19 个接口**：部门增删改（会长独占）· 成员名录/详情/编辑 · 移出社团 · 待分配与**批量分配** · **会长移交（原子）** · 重置密码 · 注册口令 · 招募链接 | ✅ **已完成** |
 | **M3 任务** | Part 4 的 **8 个接口**：我的任务（服务端分组）· 列表筛选 · 详情 · 创建（含 `client_token` 幂等）· 编辑/转交 · 状态流转与阻塞原因 · 软删除 · 日历同步 `lookup` | ✅ **已完成并验证** |
 | **M4 课题** | Part 5 的 **6 个接口**：课题树（森林 + 递归进度）· 详情（面包屑 + 本级任务）· 创建（dept_id 只顶层）· 编辑 · 移动（**环形校验** + 深度 6 + 禁止跨部门）· 删除（**子节点上提，绝不级联**） | ✅ **已完成并验证** |
-| M5 | 打包部署 · 自签证书（带 SAN）· TLS 关卡 | 待排 |
+| **M5 部署** | 带 SAN 自签证书 · **框架原生 TLS**（1.2/1.3 通过、1.0/1.1 被服务端拒绝）· 部署包（exe + 4 DLL + 证书 + 启动脚本 + 说明，18.8 MB）· 从部署目录端到端跑通 | 🟡 **本机部分已完成**；公网部署验证**待服务器信息**（架构 / 公网 IP / 端口 / 防火墙） |
 
 **接口进度：38 / 39**（认证 5 + 组织与成员 19 + 任务 8 + 课题 6；`/health` 已含在运维里）。
 

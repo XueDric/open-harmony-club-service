@@ -149,6 +149,12 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 | 17 | 响应里的中文比较 | 配合上一条：请求体乱码时，返回的中文自然也对不上，容易被误判成服务端 bug |
 | 18 | `ConvertFrom-Json` 单元素数组会退化成对象 | 断言 `.Count` 在 PS 5.1 下对单对象返回 1，可用但要心里有数 |
 | 19 | **cjenv 切换 SDK 会打断本项目的构建** | 它会改写 `CANGJIE_HOME` 并把 shims 塞进 PATH。若 `CANGJIE_HOME` 指向别的 SDK（如 1.0.5）而 PATH 里的 `cjc` 仍是 `D:\Cangjie` 的 1.1.3，就会出现**前端 1.1.3 + 后端 LLVM 1.0.5** 串台：`LLVM ERROR: Broken module found … @llvm.cj.get.vtable.func … opt.exe 崩溃`。看起来像编译器 bug，实际是环境串台。`build.ps1` 已显式钉死 `CANGJIE_HOME` 与 PATH |
+| 20 | **`.`NET 正则替换里 `$_` 是特殊记号** | `[regex]::Replace($t, 模式, "...$_.Exception.Message...")` 中的 `$_` 会被替换成**整个输入串**，把文件写坏（本次真把 `tls-check.ps1` 写坏了）。改用字面量 `.Replace()`，或避开 `$_` |
+| 21 | **`curl` 是 `Invoke-WebRequest` 的内置别名** | 自定义函数取名 `Curl` 会被别名覆盖（PowerShell 解析顺序：别名 > 函数 > cmdlet > 外部程序），于是悄悄调用到了 `Invoke-WebRequest`。改名 `CurlReq` |
+| 22 | **PS 5.1 的 `Invoke-WebRequest` 在自签 HTTPS 上会失败** | 报「基础连接已经关闭: 发送时发生错误」，而**同一时刻** curl、`openssl s_client`、`.NET HttpWebRequest`、原始 `SslStream` 全部正常（HTTP 下 `Invoke-WebRequest` 也正常）。因此 TLS 校验统一改用 curl + openssl，避免把客户端怪癖误判成服务端缺陷 |
+| 23 | **原生命令参数里的双引号会被吃掉** | `curl -d '{"a":"b"}'` 里的引号在 PS 5.1 传参时被剥离，服务端收到非法 JSON（表现为 400）。改用 `--data-binary @临时文件` |
+| 24 | **openssl / curl 往 stderr 写日志** | 脚本若用 `$ErrorActionPreference = "Stop"`，会把「原生命令写了 stderr」当成致命错误直接中断。用 `Continue` + 显式断言 |
+| 25 | **部署包里带着私钥** | `server/dist/club-server/certs/key.pem` 与 `server/certs/key.pem` 都必须在 `.gitignore` 里；`git check-ignore -v <路径>` 自检 |
 
 ---
 

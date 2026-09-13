@@ -22,6 +22,8 @@
 /server/data
 # 证书与私钥（自签证书的 key.pem 是机密）
 /server/certs
+# 部署包：内含 certs/key.pem（私钥），且是可再生的制品，绝不入库
+/server/dist
 # 编译期 API 探针（一次性，结论已固化到 server/API-NOTES.md）
 /server/.probe
 
