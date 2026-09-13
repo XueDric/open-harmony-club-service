@@ -675,9 +675,163 @@ try {
     $deletedStill = $r.json.data.items | Where-Object { $_.id -eq $idemTask }
     Check "软删除的任务不再出现在列表里" ($null -eq $deletedStill)
 
-    # ---------- 19. 优雅关闭（仅本机） ----------
+    # ---------- 19. 课题：创建与树 ----------
     Write-Host ""
-    Write-Host "[19] /admin/shutdown 仅本机可访问"
+    Write-Host "[19] 课题：创建、dept_id 规则、课题树"
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "招新总课题"; dept_id = $deptOps; owner_id = $leadId } $presToken
+    Check "建顶层课题 -> 201" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r)"
+    $planRoot = $r.json.data.plan.id
+    Check "顶层课题带 dept" ($r.json.data.plan.dept.id -eq $deptOps)
+    Check "顶层 parent_id=0" ($r.json.data.plan.parent_id -eq 0)
+
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "子课题"; parent_id = $planRoot; owner_id = $leadId } $presToken
+    Check "建子课题 -> 201" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r)"
+    $planChild = $r.json.data.plan.id
+    Check "子课题 dept 为 null（部门看根）" ($null -eq $r.json.data.plan.dept)
+    Check "子课题 parent_id 正确" ($r.json.data.plan.parent_id -eq $planRoot)
+
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "孙课题"; parent_id = $planChild; owner_id = $leadId } $presToken
+    Check "建孙课题 -> 201" ($r.status -eq 201) "status=$($r.status)"
+    $planGrand = $r.json.data.plan.id
+
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "缺部门的顶层课题"; owner_id = $leadId } $presToken
+    Check "顶层缺 dept_id -> 400" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "子课题却传部门"; parent_id = $planRoot; dept_id = $deptOps; owner_id = $leadId } $presToken
+    Check "子课题传 dept_id -> 400（部门继承自根）" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "没有负责人"; dept_id = $deptOps } $presToken
+    Check "缺 owner_id -> 400（任意层级都要有负责人）" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status)"
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "挂到不存在的父"; parent_id = 99999; owner_id = $leadId } $presToken
+    Check "父课题不存在 -> 404" (($r.status -eq 404) -and ((ErrCode $r) -eq "PLAN_NOT_FOUND")) "status=$($r.status)"
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "部长跨部门建顶层"; dept_id = $deptPub; owner_id = $leadId } $leadToken
+    Check "部长在别的部门建课题 -> 403" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_NOT_IN_DEPT")) "status=$($r.status) code=$(ErrCode $r)"
+
+    $r = Call-Api "GET" "/api/v1/plans" $null $presToken
+    Check "GET /plans -> 200" ($r.status -eq 200) "status=$($r.status)"
+    $node = $r.json.data.items | Where-Object { $_.id -eq $planRoot }
+    Check "森林含根节点" ($null -ne $node)
+    Check "根节点内嵌 children" ($node.children.Count -ge 1)
+    Check "节点含 progress" ($null -ne $node.progress)
+    Check "节点含 child_count" ($node.child_count -ge 1)
+    $r = Call-Api "GET" "/api/v1/plans?dept_id=$deptPub" $null $presToken
+    $pubNode = $r.json.data.items | Where-Object { $_.id -eq $planRoot }
+    Check "按部门筛选：别的部门看不到" ($null -eq $pubNode)
+    $r = Call-Api "GET" "/api/v1/plans?include_progress=false" $null $presToken
+    $n2 = $r.json.data.items | Where-Object { $_.id -eq $planRoot }
+    Check "include_progress=false 时不返回 progress" ($null -eq $n2.progress)
+
+    # ---------- 20. 课题：递归进度聚合 ----------
+    Write-Host ""
+    Write-Host "[20] 递归进度聚合（含整棵子树）"
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "根本级-完成"; owner_id = $leadId; plan_id = $planRoot } $presToken
+    $rootTaskId = $r.json.data.task.id
+    Call-Api "PUT" "/api/v1/tasks/$rootTaskId/status" @{ status = "done" } $presToken | Out-Null
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "子本级-进行中"; owner_id = $leadId; plan_id = $planChild } $presToken
+    $childTaskId = $r.json.data.task.id
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "孙本级-完成"; owner_id = $leadId; plan_id = $planGrand } $presToken
+    $grandTask1 = $r.json.data.task.id
+    Call-Api "PUT" "/api/v1/tasks/$grandTask1/status" @{ status = "done" } $presToken | Out-Null
+    Call-Api "POST" "/api/v1/tasks" @{ title = "孙本级-未开始"; owner_id = $leadId; plan_id = $planGrand } $presToken | Out-Null
+
+    $r = Call-Api "GET" "/api/v1/plans" $null $presToken
+    $node = $r.json.data.items | Where-Object { $_.id -eq $planRoot }
+    Check "根 progress.total 含整棵子树 = 4" ($node.progress.total -eq 4) "progress=$($node.progress | ConvertTo-Json -Compress)"
+    Check "根 progress.done 含整棵子树 = 2" ($node.progress.done -eq 2) "progress=$($node.progress | ConvertTo-Json -Compress)"
+    Check "根 task_count 只算本级 = 1" ($node.task_count -eq 1) "task_count=$($node.task_count)"
+    $childNode = $node.children | Where-Object { $_.id -eq $planChild }
+    Check "子课题 progress.total = 3（本级1 + 孙2）" ($childNode.progress.total -eq 3) "progress=$($childNode.progress | ConvertTo-Json -Compress)"
+
+    $r = Call-Api "GET" "/api/v1/plans/$planRoot" $null $presToken
+    Check "课题详情 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "详情 plan.progress 递归" ($r.json.data.plan.progress.total -eq 4)
+    Check "详情 path 面包屑含自身" (($r.json.data.path | Select-Object -Last 1).id -eq $planRoot)
+    Check "详情 children 平铺" ($r.json.data.children.Count -eq 1)
+    Check "详情 tasks 只含本级 = 1" ($r.json.data.tasks.total -eq 1) "tasks.total=$($r.json.data.tasks.total)"
+    $r = Call-Api "GET" "/api/v1/plans/$planGrand" $null $presToken
+    Check "孙课题面包屑 3 级" ($r.json.data.path.Count -eq 3) "path=$($r.json.data.path.Count)"
+
+    # ---------- 21. 课题：深度上限与环形校验 ----------
+    Write-Host ""
+    Write-Host "[21] 深度上限 6 层、环形校验、跨部门禁止"
+    $deepest = $planGrand
+    for ($i = 4; $i -le 6; $i++) {
+        $r = Call-Api "POST" "/api/v1/plans" @{ title = "第${i}层"; parent_id = $deepest; owner_id = $leadId } $presToken
+        Check "建第 $i 层 -> 201" ($r.status -eq 201) "status=$($r.status) depth=$i code=$(ErrCode $r)"
+        $deepest = $r.json.data.plan.id
+    }
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "第7层"; parent_id = $deepest; owner_id = $leadId } $presToken
+    Check "建第 7 层 -> 400 PLAN_DEPTH_EXCEEDED" (($r.status -eq 400) -and ((ErrCode $r) -eq "PLAN_DEPTH_EXCEEDED")) "status=$($r.status) code=$(ErrCode $r)"
+
+    $r = Call-Api "POST" "/api/v1/plans/$planRoot/move" @{ new_parent_id = $planRoot } $presToken
+    Check "移动到自己下面 -> 409 PLAN_CYCLE_DETECTED" (($r.status -eq 409) -and ((ErrCode $r) -eq "PLAN_CYCLE_DETECTED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/plans/$planRoot/move" @{ new_parent_id = $planGrand } $presToken
+    Check "移动到自己的后代下面 -> 409" (($r.status -eq 409) -and ((ErrCode $r) -eq "PLAN_CYCLE_DETECTED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/plans/$planRoot/move" @{ new_parent_id = 99999 } $presToken
+    Check "移动到不存在的父 -> 404" (($r.status -eq 404) -and ((ErrCode $r) -eq "PLAN_NOT_FOUND")) "status=$($r.status)"
+    $r = Call-Api "POST" "/api/v1/plans/$planRoot/move" @{ new_parent_id = $planRoot } $vpToken
+    Check "副会长可移动课题（成环仍 409）" ($r.status -eq 409) "status=$($r.status)"
+
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "宣传部课题"; dept_id = $deptPub; owner_id = $newId } $presToken
+    $planPub = $r.json.data.plan.id
+    $r = Call-Api "POST" "/api/v1/plans/$planChild/move" @{ new_parent_id = $planPub } $presToken
+    Check "跨部门移动 -> 400（v1 禁止）" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/plans/$planPub/move" @{ new_parent_id = $planChild } $leadToken
+    Check "部长跨部门移动 -> 403" ($r.status -eq 403) "status=$($r.status) code=$(ErrCode $r)"
+
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "另一分枝"; parent_id = $planRoot; owner_id = $leadId } $presToken
+    $planBranch = $r.json.data.plan.id
+    $r = Call-Api "POST" "/api/v1/plans/$planGrand/move" @{ new_parent_id = $planBranch } $presToken
+    Check "合法移动 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    Check "移动后 parent_id 已变" ($r.json.data.plan.parent_id -eq $planBranch)
+    $r = Call-Api "POST" "/api/v1/plans/$planGrand/move" @{ new_parent_id = $null; dept_id = $deptOps } $presToken
+    Check "提升为顶层 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    Check "提升后 parent_id=0" ($r.json.data.plan.parent_id -eq 0)
+    Check "提升后带上部门" ($r.json.data.plan.dept.id -eq $deptOps)
+
+    # ---------- 22. 课题：编辑与删除上提 ----------
+    Write-Host ""
+    Write-Host "[22] 课题编辑、删除上提（绝不级联删除）"
+    $r = Call-Api "PATCH" "/api/v1/plans/$planChild" @{ title = "改名后的子课题"; desc = "补充说明" } $presToken
+    Check "编辑课题 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    Check "标题已改" ($r.json.data.plan.title -eq "改名后的子课题")
+    Check "描述已存" ($r.json.data.plan.desc -eq "补充说明")
+    $r = Call-Api "PATCH" "/api/v1/plans/$planChild" @{ dept_id = $deptPub } $presToken
+    Check "PATCH 改 dept_id -> 400" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status)"
+    $r = Call-Api "PATCH" "/api/v1/plans/$planChild" @{ owner_id = 0 } $presToken
+    Check "负责人置空 -> 400" ($r.status -eq 400) "status=$($r.status) code=$(ErrCode $r)"
+
+    # 先给待删课题挂一个子课题，这样才真正验证到"上提"
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "待上提的子课题"; parent_id = $planChild; owner_id = $leadId } $presToken
+    $promoteMe = $r.json.data.plan.id
+    Check "为删除用例准备子课题 -> 201" ($r.status -eq 201) "status=$($r.status)"
+
+    $r = Call-Api "DELETE" "/api/v1/plans/$planChild" $null $presToken
+    Check "删除中间课题 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    Check "上提 1 个子课题" ($r.json.data.moved_plans -eq 1) "moved_plans=$($r.json.data.moved_plans)"
+    Check "上提 1 个本级任务" ($r.json.data.moved_tasks -eq 1) "moved_tasks=$($r.json.data.moved_tasks)"
+    $r = Call-Api "GET" "/api/v1/plans/$planChild" $null $presToken
+    Check "被删课题详情 -> 404" ($r.status -eq 404) "status=$($r.status)"
+    $r = Call-Api "GET" "/api/v1/plans/$promoteMe" $null $presToken
+    Check "子课题上提到祖父下" ($r.json.data.plan.parent_id -eq $planRoot) "parent=$($r.json.data.plan.parent_id) 期望=$planRoot"
+    $r = Call-Api "GET" "/api/v1/tasks/$childTaskId" $null $presToken
+    Check "被删课题的本级任务已上提到其父" ($r.json.data.plan.id -eq $planRoot) "plan=$($r.json.data.plan.id) 期望=$planRoot"
+
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "待删顶层"; dept_id = $deptOps; owner_id = $leadId } $presToken
+    $planTop2 = $r.json.data.plan.id
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "它的子课题"; parent_id = $planTop2; owner_id = $leadId } $presToken
+    $planTop2Child = $r.json.data.plan.id
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "顶层待删课题的任务"; owner_id = $leadId; plan_id = $planTop2 } $presToken
+    $topTaskId = $r.json.data.task.id
+    $r = Call-Api "DELETE" "/api/v1/plans/$planTop2" $null $presToken
+    Check "删除顶层课题 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    $r = Call-Api "GET" "/api/v1/plans/$planTop2Child" $null $presToken
+    Check "子课题变成顶层（parent_id=0）" ($r.json.data.plan.parent_id -eq 0)
+    Check "子课题继承原根的部门" ($r.json.data.plan.dept.id -eq $deptOps) "dept=$($r.json.data.plan.dept.id)"
+    $r = Call-Api "GET" "/api/v1/tasks/$topTaskId" $null $presToken
+    Check "顶层被删后任务变为独立任务" ($null -eq $r.json.data.plan)
+
+    # ---------- 23. 优雅关闭（仅本机） ----------
+    Write-Host ""
+    Write-Host "[23] /admin/shutdown 仅本机可访问"
     $r = Call-Api "POST" "/admin/shutdown"
     Check "本机关停 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
     $proc.WaitForExit(8000) | Out-Null
@@ -692,9 +846,9 @@ try {
     Check "日志出现『服务已停止』" ($logText -match "服务已停止") "log=[$logText]"
     Check "日志无 ERROR/FATAL" (($logText -notmatch "\[FATAL\]") -and ($logText -notmatch "FSException")) ""
 
-    # ---------- 20. 重启后数据仍在 ----------
+    # ---------- 24. 重启后数据仍在 ----------
     Write-Host ""
-    Write-Host "[20] 重启后持久性"
+    Write-Host "[24] 重启后持久性"
     $proc = Start-Server $dataRel "2"
     Check "重启后服务就绪" ($null -ne $proc)
     $r = Call-Api "POST" "/api/v1/auth/login" @{ phone = "13800000000"; password = "newpassword1" }

@@ -255,6 +255,8 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | 8 | `DELETE /dept-invite-links/{token}` 是**停用**（`enabled=false`，记录保留）且**幂等** | `api-design` §3.7 |
 | 9 | `PATCH /members/{id}` 字段级权限；待分配成员只接受 `name` | `api-design` §3.2 |
 | 10 | `assign` 对 `disabled` 成员即"恢复"，成功后清空 `dept_hint` | `api-design` §3.3 |
+| 11 | `GET /plans` 的 `depth` 上限统一为 **6**（原 §5.2 写 10，与 §5.1 及树的硬上限矛盾） | `api-design` §5.2 |
+| 12 | M4 的 9 条实现口径（`include_progress` 语义、`move` 提升顶层时的部门、移动深度校验、跨部门错误码、写接口响应形状、删除计数…） | `api-design` §5.11（新增） |
 
 `v1-scope.md` 顶部修订记录已加 **v0.11**。
 
@@ -264,8 +266,10 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | --- | --- | --- |
 | ~~M2~~ | ~~Part 3 组织与成员 19 个接口~~ | ✅ **已完成** |
 | M3 | Part 4 任务 8 个接口（`/tasks/mine` 服务端分组、`BLOCKER_REQUIRED`、软删除、`/tasks/lookup`、`client_token` 幂等） | ✅ **已完成并验证**（单测 197 / 冒烟 220 全绿） |
-| M4 | Part 5 课题 6 个接口（环形校验、深度 6、删除上提、O(n) 聚合） | 待排 |
+| M4 | Part 5 课题 6 个接口（环形校验、深度 6、删除上提、O(n) 聚合） | ✅ **已完成并验证**（单测 233 / 冒烟 280 全绿） |
 | M5 | 打包部署 · 带 SAN 自签证书 · TLS 关卡 | **卡在服务器步骤 0**（架构 / 公网 IP / 端口） |
+
+**接口进度 38 / 39**：认证 5 · 组织与成员 19 · 任务 8 · 课题 6（另 `/health` 已可用）。
 
 #### ✅ 环境故障已定位并已规避（2026-09-13 晚）
 

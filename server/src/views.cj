@@ -318,3 +318,76 @@ public func taskArr(s: Store, list: Array<Task>, now: Int64): JsonArray {
     return arr
 }
 
+/* ===================== Part 5 的视图 ===================== */
+
+/*
+ * PlanBrief（api-design §5.9）。
+ * progress 是**递归聚合值**（含整棵子树），task_count 是**本级**任务数，两者不要混。
+ * include_progress 为 false 时省略 progress 字段（该参数存在的意义就是减少计算量）。
+ */
+public func planBrief(s: Store, p: Plan, st: ?PlanStats, includeProgress: Bool): JsonObject {
+    let o = JsonObject()
+    jPutInt(o, "id", p.id)
+    jPutStr(o, "title", p.title)
+    match (s.members.get(p.owner_id)) {
+        case Some(m) => jPutObj(o, "owner", memberBrief(s, m))
+        case None => jPutNull(o, "owner")
+    }
+    /* dept 仅顶层课题有值；子课题的部门看所属根（规则 19） */
+    if (p.parent_id <= 0 && p.dept_id > 0) {
+        jPutObj(o, "dept", deptBriefObj(s, p.dept_id))
+    } else {
+        jPutNull(o, "dept")
+    }
+    jPutTime(o, "due_at", p.due_at)
+    match (st) {
+        case Some(x) =>
+            if (includeProgress) {
+                let pr = JsonObject()
+                jPutInt(pr, "done", x.done)
+                jPutInt(pr, "total", x.total)
+                jPutObj(o, "progress", pr)
+            }
+            jPutInt(o, "task_count", x.task_count)
+            jPutInt(o, "child_count", x.child_count)
+        case None =>
+            if (includeProgress) {
+                let pr = JsonObject()
+                jPutInt(pr, "done", 0)
+                jPutInt(pr, "total", 0)
+                jPutObj(o, "progress", pr)
+            }
+            jPutInt(o, "task_count", 0)
+            jPutInt(o, "child_count", 0)
+    }
+    jPutTime(o, "created_at", p.created_at)
+    jPutTime(o, "updated_at", p.updated_at)
+    return o
+}
+
+/* 课题详情用：PlanBrief 再加 desc 与 parent_id（树里不带，避免响应过大）。 */
+public func planDetailView(s: Store, p: Plan, st: ?PlanStats): JsonObject {
+    let o = planBrief(s, p, st, true)
+    jPutStr(o, "desc", p.desc)
+    jPutInt(o, "parent_id", p.parent_id)
+    return o
+}
+
+/*
+ * 树节点：PlanBrief + 内嵌 children。
+ * level 与 depthLimit 配合：超过展开层数就不展开子节点，但 child_count 仍然给，
+ * 客户端据此知道"下面还有"。
+ */
+public func planNodeJson(s: Store, p: Plan, stats: HashMap<Int64, PlanStats>, includeProgress: Bool,
+                         depthLimit: Int64, level: Int64): JsonObject {
+    let o = planBrief(s, p, stats.get(p.id), includeProgress)
+    let kids = JsonArray()
+    if (level < depthLimit) {
+        for (c in planChildrenOf(s, p.id)) {
+            kids.add(planNodeJson(s, c, stats, includeProgress, depthLimit, level + 1))
+        }
+    }
+    o.put("children", kids)
+    return o
+}
+

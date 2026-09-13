@@ -872,3 +872,288 @@ public func idemPut(s: Store, kind: String, token: String, resourceId: Int64, no
         }
     }
 }
+
+/* ===================== 课题辅助（Part 5） ===================== */
+
+/* 深度硬上限 6 层（v1-scope 规则 18）。上限的意义是防呆，不是限制表达。 */
+public let PLAN_MAX_DEPTH: Int64 = 6
+
+/* 脏数据保护用的遍历上限，远大于任何合法深度。 */
+let PLAN_WALK_GUARD: Int64 = 64
+
+/*
+ * 从 planId 向上走到根课题（顶层 parent_id == 0）。
+ * 带 guard：万一数据里有环，读取路径也不能死循环。
+ */
+public func planRootOf(s: Store, planId: Int64): Int64 {
+    var cur = planId
+    var guard: Int64 = 0
+    while (cur > 0 && guard < PLAN_WALK_GUARD) {
+        match (s.plans.get(cur)) {
+            case Some(p) =>
+                if (p.parent_id <= 0) {
+                    return cur
+                }
+                cur = p.parent_id
+            case None => return cur
+        }
+        guard += 1
+    }
+    return cur
+}
+
+/*
+ * 课题的**有效部门**：顶层课题存 dept_id，子课题的部门由所属根决定。
+ * 这正是「子课题不允许跨部门」自动成立、移动时也不需要级联更新部门的原因（规则 19）。
+ */
+public func planDeptOf(s: Store, planId: Int64): Int64 {
+    let root = planRootOf(s, planId)
+    match (s.plans.get(root)) {
+        case Some(p) => return p.dept_id
+        case None => return 0
+    }
+}
+
+/* 层级：顶层为 1。 */
+public func planDepthOf(s: Store, planId: Int64): Int64 {
+    var cur = planId
+    var d: Int64 = 1
+    var guard: Int64 = 0
+    while (cur > 0 && guard < PLAN_WALK_GUARD) {
+        match (s.plans.get(cur)) {
+            case Some(p) =>
+                if (p.parent_id <= 0) {
+                    return d
+                }
+                cur = p.parent_id
+                d += 1
+            case None => return d
+        }
+        guard += 1
+    }
+    return d
+}
+
+/* 以 planId 为根的子树高度（含自身）。带层级 guard，防脏数据成环。 */
+public func planHeightOf(s: Store, planId: Int64): Int64 {
+    return planHeightFrom(s, planId, 0)
+}
+
+func planHeightFrom(s: Store, planId: Int64, level: Int64): Int64 {
+    if (level > PLAN_WALK_GUARD) {
+        return 1
+    }
+    let kids = planChildrenOf(s, planId)
+    if (kids.size == 0) {
+        return 1
+    }
+    var best: Int64 = 0
+    for (k in kids) {
+        let h = planHeightFrom(s, k.id, level + 1)
+        if (h > best) {
+            best = h
+        }
+    }
+    return best + 1
+}
+
+/* 直接子课题，按 id 升序。 */
+public func planChildrenOf(s: Store, planId: Int64): Array<Plan> {
+    let out = ArrayList<Plan>()
+    for ((_k, p) in s.plans) {
+        if (p.parent_id == planId) {
+            out.add(p)
+        }
+    }
+    let arr = out.toArray()
+    sortByKey<Plan>(arr, { p: Plan => p.id })
+    return arr
+}
+
+/*
+ * 环形校验（api-design §5.6 的实现提示）：**从目标父节点向上遍历到根**，
+ * 而不是向下扫子树——向上遍历的深度通常远小于子树规模。
+ * 一旦成环，递归进度聚合会无限循环并拖垮服务，这是多级结构下最容易出的事故。
+ */
+public func planWouldCycle(s: Store, planId: Int64, newParentId: Int64): Bool {
+    if (newParentId <= 0) {
+        return false
+    }
+    var cur = newParentId
+    var guard: Int64 = 0
+    while (cur > 0 && guard < PLAN_WALK_GUARD) {
+        if (cur == planId) {
+            return true
+        }
+        match (s.plans.get(cur)) {
+            case Some(p) => cur = p.parent_id
+            case None => return false
+        }
+        guard += 1
+    }
+    return false
+}
+
+/* 把 rootId 及其全部后代加入 out（供可见性集合与统计用）。 */
+public func planSubtreeInto(s: Store, rootId: Int64, out: HashSet<Int64>): Unit {
+    let queue = ArrayList<Int64>()
+    queue.add(rootId)
+    out.add(rootId)
+    var i: Int64 = 0
+    while (i < queue.size) {
+        let cur = queue[i]
+        i += 1
+        for ((_k, p) in s.plans) {
+            if (p.parent_id == cur && !out.contains(p.id)) {
+                out.add(p.id)
+                queue.add(p.id)
+            }
+        }
+    }
+}
+
+/* 一个课题的聚合统计。 */
+public class PlanStats {
+    public var own_total: Int64 = 0    /* 本级任务总数 */
+    public var own_done: Int64 = 0     /* 本级已完成 */
+    public var task_count: Int64 = 0   /* 本级任务数（对外字段） */
+    public var total: Int64 = 0        /* 递归聚合：含整棵子树 */
+    public var done: Int64 = 0         /* 递归聚合：含整棵子树 */
+    public var child_count: Int64 = 0  /* 直接子课题数 */
+
+    public init() {}
+}
+
+/*
+ * 递归进度聚合，**自底向上一次算完，O(n)**。
+ *
+ * api-design §5.8 明确警告：不要对每个节点各自递归（那是 O(n^2)，课题一多就明显变慢）。
+ * 做法：先按"深度从深到浅"排序，再依次把子节点的聚合值累加到父节点——
+ * 处理到某个节点时，它的所有子节点必然已经算完。
+ *
+ * 只统计**未删除**的任务；已完成按 status == done 判定。
+ */
+public func planStatsAll(s: Store, ids: HashSet<Int64>): HashMap<Int64, PlanStats> {
+    let stats = HashMap<Int64, PlanStats>()
+
+    /* 1) 建表 + 直接子课题数 */
+    for ((_k, p) in s.plans) {
+        if (!ids.contains(p.id)) {
+            continue
+        }
+        stats[p.id] = PlanStats()
+    }
+    for ((_k, p) in s.plans) {
+        if (!ids.contains(p.id) || p.parent_id <= 0 || !ids.contains(p.parent_id)) {
+            continue
+        }
+        match (stats.get(p.parent_id)) {
+            case Some(parent) => parent.child_count += 1
+            case None => ()
+        }
+    }
+
+    /* 2) 本级任务数 */
+    for ((_k, t) in s.tasks) {
+        if (t.deleted_at > 0 || t.plan_id <= 0 || !ids.contains(t.plan_id)) {
+            continue
+        }
+        match (stats.get(t.plan_id)) {
+            case Some(st) =>
+                st.task_count += 1
+                st.own_total += 1
+                if (t.status == "done") {
+                    st.own_done += 1
+                }
+            case None => ()
+        }
+    }
+
+    /* 3) 先把 total/done 初始化成**本级值** */
+    for ((_k, p) in s.plans) {
+        if (!ids.contains(p.id)) {
+            continue
+        }
+        match (stats.get(p.id)) {
+            case Some(st) =>
+                st.total = st.own_total
+                st.done = st.own_done
+            case None => ()
+        }
+    }
+
+    /* 4) 深度从深到浅累加到父节点。注意这里**不能**再重置 total/done，
+     *    否则会把子节点刚累加进来的值覆盖回本级值（父课题进度会永远偏小）。 */
+    let list = ArrayList<Plan>()
+    for ((_k, p) in s.plans) {
+        if (ids.contains(p.id)) {
+            list.add(p)
+        }
+    }
+    let arr = list.toArray()
+    sortByKey<Plan>(arr, { p: Plan => 0 - planDepthOf(s, p.id) * 1000000 + p.id })
+    for (p in arr) {
+        match (stats.get(p.id)) {
+            case Some(st) =>
+                if (p.parent_id > 0) {
+                    match (stats.get(p.parent_id)) {
+                        case Some(parent) =>
+                            parent.total += st.total
+                            parent.done += st.done
+                        case None => ()
+                    }
+                }
+            case None => ()
+        }
+    }
+    return stats
+}
+
+/*
+ * 删除课题：**直接子节点上提一级，绝不级联删除**（v1-scope 规则 9）。
+ *
+ *   子课题   -> parent_id = P.parent_id
+ *   任务     -> plan_id   = P.parent_id
+ *   P 是顶层 -> 子课题变为顶层并**继承 P 的 dept_id**（dept_id 只存顶层，这一步不能漏）
+ *               任务变为独立任务（plan_id = 0）
+ *
+ * 为什么不做级联删除：任务承载着人的工作量记录，一次误删丢掉整棵子树
+ * 是这个设计里最不可接受的失败模式。
+ *
+ * 返回（上提的课题数，上提的任务数）；任务数只算未删除的。
+ * 抽成纯函数是为了可单测；handler 负责权限、审计与落盘。
+ */
+public func planDeletePromote(s: Store, id: Int64): (Int64, Int64) {
+    let target = match (s.plans.get(id)) {
+        case Some(x) => x
+        case None => return (0, 0)
+    }
+    let newParent = target.parent_id
+    let wasTop = (newParent <= 0)
+    let inheritDept = target.dept_id
+    let now = nowEpoch()
+    var movedPlans: Int64 = 0
+    var movedTasks: Int64 = 0
+
+    for ((_k, c) in s.plans) {
+        if (c.parent_id == id && c.id != id) {
+            c.parent_id = newParent
+            if (wasTop) {
+                c.dept_id = inheritDept
+            }
+            c.updated_at = now
+            movedPlans += 1
+        }
+    }
+    for ((_k, t) in s.tasks) {
+        if (t.plan_id == id) {
+            t.plan_id = newParent
+            t.updated_at = now
+            if (t.deleted_at <= 0) {
+                movedTasks += 1
+            }
+        }
+    }
+    s.plans.remove(id)
+    return (movedPlans, movedTasks)
+}

@@ -271,6 +271,25 @@ func buildApp(s: Store, box: HandleBox): QingZhouApp {
         .delete("/api/v1/tasks/:id", { ctx: Context, _: () -> Unit =>
             handleTaskDelete(ctx, s)
         })
+        /* Part 5 · 课题（6） */
+        .get("/api/v1/plans", { ctx: Context, _: () -> Unit =>
+            handlePlanTree(ctx, s)
+        })
+        .post("/api/v1/plans", { ctx: Context, _: () -> Unit =>
+            handlePlanCreate(ctx, s)
+        })
+        .get("/api/v1/plans/:id", { ctx: Context, _: () -> Unit =>
+            handlePlanDetail(ctx, s)
+        })
+        .patch("/api/v1/plans/:id", { ctx: Context, _: () -> Unit =>
+            handlePlanUpdate(ctx, s)
+        })
+        .post("/api/v1/plans/:id/move", { ctx: Context, _: () -> Unit =>
+            handlePlanMove(ctx, s)
+        })
+        .delete("/api/v1/plans/:id", { ctx: Context, _: () -> Unit =>
+            handlePlanDelete(ctx, s)
+        })
 
     /*
      * 统一错误出口：

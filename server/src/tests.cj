@@ -786,6 +786,209 @@ func testTasks(t: TR): Unit {
     t.ok("失效后被清理", !s.idem.contains("task:tok-1"))
 }
 
+/* ===================== Part 5 的课题 ===================== */
+
+func planStatTotal(st: HashMap<Int64, PlanStats>, id: Int64): Int64 {
+    match (st.get(id)) {
+        case Some(x) => return x.total
+        case None => return -1
+    }
+}
+
+func planStatDone(st: HashMap<Int64, PlanStats>, id: Int64): Int64 {
+    match (st.get(id)) {
+        case Some(x) => return x.done
+        case None => return -1
+    }
+}
+
+func planStatOwn(st: HashMap<Int64, PlanStats>, id: Int64): Int64 {
+    match (st.get(id)) {
+        case Some(x) => return x.task_count
+        case None => return -1
+    }
+}
+
+func planStatChild(st: HashMap<Int64, PlanStats>, id: Int64): Int64 {
+    match (st.get(id)) {
+        case Some(x) => return x.child_count
+        case None => return -1
+    }
+}
+
+func testPlans(t: TR): Unit {
+    println("- plans 课题树 递归聚合 环形校验 删除上提")
+    let s = Store("build/test-data-plans")
+    let p1 = Plan()
+    p1.id = 1
+    p1.title = "P1"
+    p1.parent_id = 0
+    p1.dept_id = 2
+    p1.owner_id = 7
+    let p2 = Plan()
+    p2.id = 2
+    p2.title = "P2"
+    p2.parent_id = 1
+    p2.owner_id = 7
+    let p3 = Plan()
+    p3.id = 3
+    p3.title = "P3"
+    p3.parent_id = 2
+    p3.owner_id = 8
+    let p4 = Plan()
+    p4.id = 4
+    p4.title = "P4"
+    p4.parent_id = 0
+    p4.dept_id = 3
+    p4.owner_id = 9
+    s.plans[1] = p1
+    s.plans[2] = p2
+    s.plans[3] = p3
+    s.plans[4] = p4
+
+    /* dept_id 只存顶层，子课题的部门由所属根决定（规则 19） */
+    t.eqi("顶层部门", planDeptOf(s, 1), 2)
+    t.eqi("子课题部门看根", planDeptOf(s, 2), 2)
+    t.eqi("孙课题部门看根", planDeptOf(s, 3), 2)
+    t.eqi("另一棵树部门", planDeptOf(s, 4), 3)
+    t.eqi("向上找到的根", planRootOf(s, 3), 1)
+
+    /* 层级与子树高度 */
+    t.eqi("顶层深度", planDepthOf(s, 1), 1)
+    t.eqi("孙深度", planDepthOf(s, 3), 3)
+    t.eqi("顶层子树高度", planHeightOf(s, 1), 3)
+    t.eqi("中间节点子树高度", planHeightOf(s, 2), 2)
+    t.eqi("叶子高度", planHeightOf(s, 3), 1)
+    t.eqi("顶层直接子节点数", planChildrenOf(s, 1).size, 1)
+
+    /* 环形校验：从目标父节点向上遍历 */
+    t.ok("不能挂到自己下面", planWouldCycle(s, 1, 1))
+    t.ok("不能挂到自己的后代下面", planWouldCycle(s, 1, 3))
+    t.ok("挂到无关节点可以", !planWouldCycle(s, 1, 4))
+    t.ok("挂到自己的父节点可以", !planWouldCycle(s, 2, 1))
+    t.ok("提升为顶层不算环", !planWouldCycle(s, 2, 0))
+
+    /* 递归聚合：1 -> 2 -> 3，任务挂在不同层级 */
+    let t1 = Task()
+    t1.id = 1
+    t1.title = "T1"
+    t1.owner_id = 7
+    t1.plan_id = 1
+    t1.dept_id = 2
+    t1.status = "done"
+    let t2 = Task()
+    t2.id = 2
+    t2.title = "T2"
+    t2.owner_id = 7
+    t2.plan_id = 2
+    t2.dept_id = 2
+    t2.status = "doing"
+    let t3 = Task()
+    t3.id = 3
+    t3.title = "T3"
+    t3.owner_id = 7
+    t3.plan_id = 3
+    t3.dept_id = 2
+    t3.status = "done"
+    let t4 = Task()
+    t4.id = 4
+    t4.title = "T4"
+    t4.owner_id = 7
+    t4.plan_id = 3
+    t4.dept_id = 2
+    t4.status = "todo"
+    let t5 = Task()
+    t5.id = 5
+    t5.title = "T5 已删除"
+    t5.owner_id = 7
+    t5.plan_id = 3
+    t5.dept_id = 2
+    t5.status = "done"
+    t5.deleted_at = 1789898400
+    s.tasks[1] = t1
+    s.tasks[2] = t2
+    s.tasks[3] = t3
+    s.tasks[4] = t4
+    s.tasks[5] = t5
+
+    let ids = HashSet<Int64>()
+    ids.add(1)
+    ids.add(2)
+    ids.add(3)
+    let st = planStatsAll(s, ids)
+
+    t.eqi("叶子 total 含自身", planStatTotal(st, 3), 2)
+    t.eqi("叶子 done", planStatDone(st, 3), 1)
+    t.eqi("叶子本级任务数 软删除不计", planStatOwn(st, 3), 2)
+    t.eqi("中间节点 total 等于本级 1 加子树 2", planStatTotal(st, 2), 3)
+    t.eqi("中间节点 done 等于 0 加 1", planStatDone(st, 2), 1)
+    t.eqi("根 total 等于本级 1 加子树 3", planStatTotal(st, 1), 4)
+    t.eqi("根 done 等于 1 加 1", planStatDone(st, 1), 2)
+    t.eqi("本级任务数不含子课题", planStatOwn(st, 1), 1)
+    t.eqi("根的直接子课题数", planStatChild(st, 1), 1)
+
+    /* 删除中间节点：直接子节点上提一级 */
+    let mv = planDeletePromote(s, 2)
+    t.eqi("上提课题数", mv[0], 1)
+    t.eqi("上提任务数", mv[1], 1)
+    t.ok("被删课题已移除", !s.plans.contains(2))
+    match (s.plans.get(3)) {
+        case Some(x) => t.eqi("孙课题上提到根下", x.parent_id, 1)
+        case None => t.ok("孙课题还在", false)
+    }
+    match (s.tasks.get(2)) {
+        case Some(x) => t.eqi("本级任务上提到根下", x.plan_id, 1)
+        case None => t.ok("任务还在", false)
+    }
+
+    /* 删除顶层：子课题变顶层并继承部门，孙节点不动 */
+    let p5 = Plan()
+    p5.id = 5
+    p5.title = "P5"
+    p5.parent_id = 0
+    p5.dept_id = 3
+    p5.owner_id = 9
+    let p6 = Plan()
+    p6.id = 6
+    p6.title = "P6"
+    p6.parent_id = 5
+    p6.owner_id = 9
+    let p7 = Plan()
+    p7.id = 7
+    p7.title = "P7"
+    p7.parent_id = 6
+    p7.owner_id = 9
+    s.plans[5] = p5
+    s.plans[6] = p6
+    s.plans[7] = p7
+    let t6 = Task()
+    t6.id = 6
+    t6.title = "T6"
+    t6.owner_id = 9
+    t6.plan_id = 5
+    t6.dept_id = 3
+    t6.status = "todo"
+    s.tasks[6] = t6
+
+    let mv2 = planDeletePromote(s, 5)
+    t.eqi("删除顶层 上提 1 个子课题", mv2[0], 1)
+    t.eqi("删除顶层 上提 1 个任务", mv2[1], 1)
+    match (s.plans.get(6)) {
+        case Some(x) =>
+            t.eqi("子课题变为顶层", x.parent_id, 0)
+            t.eqi("子课题继承原根的部门", x.dept_id, 3)
+        case None => t.ok("子课题还在", false)
+    }
+    match (s.plans.get(7)) {
+        case Some(x) => t.eqi("孙节点不被上提 父仍是 6", x.parent_id, 6)
+        case None => t.ok("孙节点还在", false)
+    }
+    match (s.tasks.get(6)) {
+        case Some(x) => t.eqi("顶层被删 本级任务变独立", x.plan_id, 0)
+        case None => t.ok("任务还在", false)
+    }
+}
+
 /* ===================== 入口 ===================== */
 
 public func runTests(): Int64 {
@@ -801,6 +1004,7 @@ public func runTests(): Int64 {
     testPart3Views(t)
     testPaging(t)
     testTasks(t)
+    testPlans(t)
     println("")
     println("PASS ${t.pass} / FAIL ${t.fail}")
     if (t.fail == 0) {
