@@ -273,6 +273,7 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | --- | --- | --- |
 | 1 | **服务器步骤 0 未跑** | 卡 M5：需确认架构是否 x64、公网 IP、端口、防火墙+安全组 |
 | 2 | 轻舟 DEF-1 上游未修 | 本地补丁顶着；补丁已记录在 `server/build.ps1` 与 `API-NOTES.md` |
-| 3 | 工作区原先**不是 git 仓库** | 2026-09-13 已建 GitHub 仓库 `XueDric/open-harmony-club-service` 并上传 |
+| 3 | 工作区原先**不是 git 仓库** | 2026-09-13 已建 GitHub 仓库 `XueDric/open-harmony-club-service` 并上传；提交作者为 `XueDric <318242380+XueDric@users.noreply.github.com>` |
+| 3b | **本机直连 github.com 不通** | 实验室网络需走本地代理（`127.0.0.1:7897`）。推送用：<br>`git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main`<br>（`git ls-remote` 直连会 20s 超时，别误判成权限问题） |
 | 4 | 忘记密码：v1 由会长重置 | 已定 |
 | 5 | 服务器可用期限、备份交接人 | 需向老师确认 |
