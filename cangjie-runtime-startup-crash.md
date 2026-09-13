@@ -1,4 +1,4 @@
-# 仓颉运行时启动即崩（Windows 10 26300.9539 + KB5124010）· 缺陷报告
+# 仓颉运行时启动即崩（Windows 11 26300.9539 + KB5124010）· 缺陷报告
 
 - 报告方：社团管理工具项目组
 - 接收方：仓颉（Cangjie）团队
@@ -34,7 +34,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 产品 | Windows 10 Pro |
+| 产品 | **Windows 11 专业版**（`Win32_OperatingSystem.Caption = Microsoft Windows 11 专业版`，build 26300 ≥ 22000）<br>⚠️ 注意：注册表 `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProductName` 仍写着 **"Windows 10 Pro"**，这是 Windows 长期未更新的兼容性遗留值，**不是**真实版本；`WindowsVersion=2009` 同理。请以 `Caption` / build 号为准 |
 | DisplayVersion | **26H2** |
 | CurrentBuild / UBR | **26300 / 9539** |
 | 系统区域 / 代码页 | 中文（简体，中国）· ACP = **936**（**未**启用 UTF-8 beta） |

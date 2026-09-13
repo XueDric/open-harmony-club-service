@@ -20,7 +20,9 @@
 
 ````
 **操作系统**
-- Windows 10 Pro / DisplayVersion 26H2 / build 26300
+- **Windows 11 专业版**（x64）· DisplayVersion 26H2 · build 26300
+  - ⚠️ 提示：注册表 `ProductName` 仍写着 "Windows 10 Pro"，这是 Windows 长期未更新的兼容性遗留值，
+    真实版本请以 `Win32_OperatingSystem.Caption`（= `Microsoft Windows 11 专业版`）或 build 号（≥ 22000）为准
 - 故障时 UBR = **9539**（已安装 2026-09 预览更新 **KB5124010**，2026-09-13 21:40:35 安装成功）
 - 现已被我们回退至 UBR = **9445**（卸载该更新后问题消失，见"问题描述"）
 - 区域/代码页：zh-CN，ACP = 936（**未**启用 UTF-8 beta）
@@ -135,7 +137,7 @@ B（更新后）7.0.26100.9444   wcslen RVA = 0x62ED0
 ## 字段 4 · 复现步骤 | Reproduction Steps
 
 ````
-1. 准备环境：Windows 10 build **26300.9539**（已安装 2026-09 预览更新 **KB5124010**），
+1. 准备环境：**Windows 11** build **26300.9539**（已安装 2026-09 预览更新 **KB5124010**），
    Cangjie 1.1.3 (cjnative, x86_64-w64-mingw32)。
 
 2. 新建 `hello.cj`（**注意：不要只打印，同时写一个文件**——`println` 有缓冲，
