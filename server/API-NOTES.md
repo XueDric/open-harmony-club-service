@@ -183,18 +183,43 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 不是本项目代码问题。仓颉运行时（DLL 构建于 2025/7/30）在这个新的 Windows 补丁级别上
 在 `main` 之前就走到了非法内存访问。
 
-### 5.3 处置建议（按成本排序）
+### 5.3 处置建议与**验证结果**
 
-1. **卸载 KB5124010**（它是**预览更新**，属于可选更新，卸载成本低）：
-   设置 → Windows 更新 → 更新历史 → 卸载更新；或管理员执行 `wusa /uninstall /kb:5124010`，然后重启。
-   **这最可能一步到位。**
+1. ✅ **实测有效：卸载 KB5124010**（预览更新，属可选更新）：设置 → Windows 更新 → 更新历史记录 →
+   卸载更新，重启即可恢复。**我们已在 2026-09-13 22:18 按此恢复开发。**
 2. 若必须保留该更新：**换一台机器**验证/开发；同时把本页的证据反馈给仓颉团队
-   （[UsersForum](https://gitcode.com/Cangjie/UsersForum/overview)），附上 `msvcrt!wcslen+0x4E` 与 KB 编号。
+   （[UsersForum](https://gitcode.com/Cangjie/UsersForum/overview)），附上 `msvcrt!wcslen+0x4E`、
+   KB 编号，以及下面"唯一变化的是 ntdll"这一收窄结论。
 3. 也可以试 **Nightly Builds** 的 SDK（`gitcode.com/Cangjie/nightly_build/releases`），
    但那是非稳定通道，本项目基线是 1.1.3。
 
-> 恢复后请立刻跑：`.\build\club-server.exe test` 与 `tests\smoke.ps1`，
-> 确认 M3 的任务接口在真实运行时下通过。
+### 5.4 受控 A/B：卸载更新后立即恢复
+
+**同一台机器、同一套仓颉 1.1.3、同一份 `msvcrt.dll`**，卸载 KB5124010 并重启后完全反转：
+
+| 指标 | 故障时（UBR 26300.9539） | 卸载后（UBR 26300.9445） |
+| --- | --- | --- |
+| 最小 hello world | ❌ `0xC0000005`，无输出 | ✅ `exit 0`，正常输出 |
+| `club-server.exe test`（单测） | ❌ 崩（`main()` 未执行） | ✅ **PASS 197 / FAIL 0** |
+| `tests\smoke.ps1`（真实 HTTP） | ❌ 服务起不来 | ✅ **PASS 220 / FAIL 0** |
+
+**唯一版本发生变化的已加载模块是 `ntdll.dll`**：
+
+| DLL | 故障时 | 卸载后 | 变化 |
+| --- | --- | --- | --- |
+| **`ntdll.dll`** | **10.0.26100.9539** | **10.0.26100.9278** | ✅ |
+| `msvcrt.dll` | 7.0.26100.9444 | 7.0.26100.9444 | — |
+| `ucrtbase.dll` / `msvcp_win.dll` | 10.0.26100.9444 | 10.0.26100.9444 | — |
+| `KERNEL32.DLL` / `KERNELBASE.dll` | 10.0.26100.9278 | 10.0.26100.9278 | — |
+
+→ 这解释了"`msvcrt!wcslen` 机器码一字未改却崩在那里"的反常：**变的是 ntdll（加载器）**。
+怀疑范围应收窄到**加载器与该版本仓颉运行时的交互**。
+
+> **更正**：早前我们把"`PendingFileRenameOperations` 非空"当作"系统更新未收尾"的证据。
+> 卸载后**运行正常时该项依然非空**，该判据不成立，特此更正。
+
+> 完整缺陷报告（可直接提交给仓颉团队）见仓库根目录 `cangjie-runtime-startup-crash.md`；
+> 证据包为 `cangjie-runtime-crash-report-2026-09-13.zip`。
 
 ---
 

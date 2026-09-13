@@ -543,9 +543,141 @@ try {
     $r = Call-Api "DELETE" "/api/v1/dept-invite-links/nonexistent" $null $presToken
     Check "停用不存在的链接 -> 200（幂等）" ($r.status -eq 200) "status=$($r.status)"
 
-    # ---------- 15. 优雅关闭（仅本机） ----------
+    # ---------- 15. 任务：创建与幂等 ----------
     Write-Host ""
-    Write-Host "[15] /admin/shutdown 仅本机可访问"
+    Write-Host "[15] 任务：创建、负责人唯一、client_token 幂等"
+    $r = Call-Api "POST" "/api/v1/members/$memId/reset-password" $null $presToken
+    $memPw = [string]$r.json.data.temporary_password
+    $memToken = Login-Token $memPhone $memPw
+    Check "成员登录成功（任务用例需要）" ($memToken.Length -eq 64)
+
+    $pastDue = (Get-Date).AddDays(-3).ToString("yyyy-MM-ddTHH:mm:sszzz")
+    # "今天到期"取当天 23:59。若恰好在一天最后一分钟运行，它会落进「逾期」组，
+    # 因此下面的断言对两种结果都接受。
+    $soonDue = (Get-Date).Date.AddHours(23).AddMinutes(59).ToString("yyyy-MM-ddTHH:mm:sszzz")
+    $weekDue = (Get-Date).AddDays(3).ToString("yyyy-MM-ddTHH:mm:sszzz")
+    $lateDue = (Get-Date).AddDays(20).ToString("yyyy-MM-ddTHH:mm:sszzz")
+
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "逾期任务"; owner_id = $memId; due_at = $pastDue; desc = "已经晚了" } $presToken
+    Check "创建任务 -> 201" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r)"
+    $taskOverdue = $r.json.data.task.id
+    Check "新任务 status=todo" ($r.json.data.task.status -eq "todo")
+    Check "部门标签跟随负责人" ($r.json.data.task.dept.id -eq $deptOps)
+    Check "新任务 is_overdue=true" ($r.json.data.task.is_overdue -eq $true)
+
+    $ct = [guid]::NewGuid().ToString()
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "幂等任务"; owner_id = $memId; client_token = $ct } $presToken
+    Check "带 client_token 创建 -> 201" ($r.status -eq 201) "status=$($r.status)"
+    $idemTask = $r.json.data.task.id
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "幂等任务"; owner_id = $memId; client_token = $ct } $presToken
+    Check "重复提交 -> 200（不是 201）" ($r.status -eq 200) "status=$($r.status)"
+    Check "重复提交 duplicated=true" ($r.json.data.duplicated -eq $true)
+    Check "重复提交返回同一个任务（没有创建两遍）" ($r.json.data.task.id -eq $idemTask)
+
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "没有负责人" } $presToken
+    Check "缺负责人 -> 400 VALIDATION_FAILED" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "分给待分配账号"; owner_id = $stillId } $presToken
+    Check "分给待分配账号 -> 403 MEMBER_PENDING" (($r.status -eq 403) -and ((ErrCode $r) -eq "MEMBER_PENDING")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "挂到不存在的课题"; owner_id = $memId; plan_id = 99999 } $presToken
+    Check "挂到不存在的课题 -> 404 PLAN_NOT_FOUND" (($r.status -eq 404) -and ((ErrCode $r) -eq "PLAN_NOT_FOUND")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "部长跨部门分配"; owner_id = $newId } $leadToken
+    Check "部长给外部门成员分任务 -> 403 FORBIDDEN_NOT_IN_DEPT" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_NOT_IN_DEPT")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "成员建任务"; owner_id = $memId } $memToken
+    Check "普通成员建任务 -> 403 FORBIDDEN_ROLE" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+
+    # ---------- 16. 我的任务（服务端分组） ----------
+    Write-Host ""
+    Write-Host "[16] GET /tasks/mine：服务端分组，客户端不重复实现"
+    Call-Api "POST" "/api/v1/tasks" @{ title = "今天到期"; owner_id = $memId; due_at = $soonDue } $presToken | Out-Null
+    Call-Api "POST" "/api/v1/tasks" @{ title = "三天后"; owner_id = $memId; due_at = $weekDue } $presToken | Out-Null
+    Call-Api "POST" "/api/v1/tasks" @{ title = "很久以后"; owner_id = $memId; due_at = $lateDue } $presToken | Out-Null
+    Call-Api "POST" "/api/v1/tasks" @{ title = "没有截止"; owner_id = $memId } $presToken | Out-Null
+
+    $r = Call-Api "GET" "/api/v1/tasks/mine" $null $memToken
+    Check "GET /tasks/mine -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "逾期组非空" ($r.json.data.counts.overdue -ge 1) "counts=$($r.json.data.counts | ConvertTo-Json -Compress)"
+    $todayOk = ($r.json.data.due_today.Count -ge 1) -or
+               (($r.json.data.overdue | Where-Object { $_.title -eq "今天到期" }) -ne $null)
+    Check "今天组非空（当日最后一分钟运行时归入逾期）" $todayOk
+    Check "本周组非空" ($r.json.data.due_week.Count -ge 1)
+    Check "以后组非空" ($r.json.data.later.Count -ge 1)
+    Check "无截止组非空" ($r.json.data.no_due.Count -ge 1)
+    Check "counts.open_total 存在" ($null -ne $r.json.data.counts.open_total)
+    $r = Call-Api "GET" "/api/v1/tasks/mine" $null $presToken
+    Check "会长 /tasks/mine 只返回自己的（0 条）" ($r.json.data.counts.open_total -eq 0) "open_total=$($r.json.data.counts.open_total)"
+
+    # ---------- 17. 状态流转与阻塞原因 ----------
+    Write-Host ""
+    Write-Host "[17] 状态流转：blocked 必须填原因、离开自动清空、done 记时间"
+    $r = Call-Api "PUT" "/api/v1/tasks/$taskOverdue/status" @{ status = "blocked" } $presToken
+    Check "进 blocked 不填原因 -> 400 BLOCKER_REQUIRED" (($r.status -eq 400) -and ((ErrCode $r) -eq "BLOCKER_REQUIRED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PUT" "/api/v1/tasks/$taskOverdue/status" @{ status = "blocked"; blocker = "等场地审批，已提交 3 天" } $presToken
+    Check "填了原因 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    Check "blocked=true" ($r.json.data.blocked -eq $true)
+    Check "blocker 已保存" ($r.json.data.blocker -eq "等场地审批，已提交 3 天")
+    Check "阻塞与逾期两个事实并存（不互斥）" ($r.json.data.is_overdue -eq $true)
+    $r = Call-Api "PUT" "/api/v1/tasks/$taskOverdue/status" @{ status = "doing" } $presToken
+    Check "离开 blocked 自动清空 blocker" ($null -eq $r.json.data.blocker) "blocker=$($r.json.data.blocker)"
+    $r = Call-Api "PUT" "/api/v1/tasks/$taskOverdue/status" @{ status = "done" } $presToken
+    Check "进 done -> 200" ($r.status -eq 200)
+    Check "completed_at 已记录" ($null -ne $r.json.data.completed_at)
+    Check "已完成不算逾期" ($r.json.data.is_overdue -eq $false)
+    $r = Call-Api "PUT" "/api/v1/tasks/$taskOverdue/status" @{ status = "todo" } $presToken
+    Check "从 done 退回清空 completed_at" ($null -eq $r.json.data.completed_at)
+    $r = Call-Api "PUT" "/api/v1/tasks/$taskOverdue/status" @{ status = "50%" } $presToken
+    Check "非法状态 -> 400（不做进度百分比）" ($r.status -eq 400) "status=$($r.status)"
+
+    $r = Call-Api "PUT" "/api/v1/tasks/$taskOverdue/status" @{ status = "doing" } $memToken
+    Check "成员改自己任务状态 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "部长的任务"; owner_id = $leadId } $presToken
+    $leadTask = $r.json.data.task.id
+    $r = Call-Api "PUT" "/api/v1/tasks/$leadTask/status" @{ status = "doing" } $memToken
+    Check "成员改他人任务状态 -> 403" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+
+    # ---------- 18. 详情 / 编辑 / 转交 / 软删除 / 日历同步 ----------
+    Write-Host ""
+    Write-Host "[18] 任务详情、转交、软删除、日历同步 lookup"
+    $r = Call-Api "GET" "/api/v1/tasks/$taskOverdue" $null $presToken
+    Check "详情 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "详情含 desc" ($r.json.data.desc -eq "已经晚了")
+    Check "详情含 plan_path（客户端画面包屑用）" ($null -ne $r.json.data.plan_path)
+    Check "详情含 created_by" ($null -ne $r.json.data.created_by)
+    Check "详情不含手机号" (-not ($r.json.data.owner.PSObject.Properties.Name -contains "phone"))
+
+    $r = Call-Api "PATCH" "/api/v1/tasks/$taskOverdue" @{ title = "改名后的任务"; desc = "改过的描述" } $presToken
+    Check "编辑标题/描述 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "标题已改" ($r.json.data.title -eq "改名后的任务")
+    $r = Call-Api "PATCH" "/api/v1/tasks/$taskOverdue" @{ due_at = $null } $presToken
+    Check "due_at 显式传 null -> 清空截止时间" ($null -eq $r.json.data.due_at) "due_at=$($r.json.data.due_at)"
+    $r = Call-Api "PATCH" "/api/v1/tasks/$taskOverdue" @{ owner_id = 0 } $presToken
+    Check "负责人置空 -> 400（任务必须始终有人负责）" ($r.status -eq 400) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PATCH" "/api/v1/tasks/$taskOverdue" @{ owner_id = $newId } $presToken
+    Check "跨部门转交（会长）-> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "部门标签跟随新负责人" ($r.json.data.dept.id -eq $deptPub) "dept=$($r.json.data.dept.id) 期望=$deptPub"
+
+    $r = Call-Api "GET" "/api/v1/tasks?dept_id=$deptPub" $null $leadToken
+    Check "部长看不到外部门任务（可见范围）" ($r.json.data.total -eq 0) "total=$($r.json.data.total)"
+    $r = Call-Api "GET" "/api/v1/tasks" $null $leadToken
+    Check "部长看本部门任务列表 -> 200" ($r.status -eq 200) "status=$($r.status)"
+
+    $r = Call-Api "POST" "/api/v1/tasks/lookup" @{ task_ids = @($leadTask, 99999) } $presToken
+    Check "lookup -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "lookup：存在的进 items" ($r.json.data.items.Count -eq 1) "items=$($r.json.data.items.Count)"
+    Check "lookup：不存在的进 missing" ($r.json.data.missing -contains 99999)
+
+    $r = Call-Api "DELETE" "/api/v1/tasks/$idemTask" $null $presToken
+    Check "软删除 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    $r = Call-Api "GET" "/api/v1/tasks/$idemTask" $null $presToken
+    Check "删除后详情 -> 404" ($r.status -eq 404) "status=$($r.status)"
+    $r = Call-Api "POST" "/api/v1/tasks/lookup" @{ task_ids = @($idemTask) } $presToken
+    Check "删除后 lookup 归入 missing（客户端据此清理本地日历）" ($r.json.data.missing -contains $idemTask)
+    $r = Call-Api "GET" "/api/v1/tasks?owner_id=$memId" $null $presToken
+    $deletedStill = $r.json.data.items | Where-Object { $_.id -eq $idemTask }
+    Check "软删除的任务不再出现在列表里" ($null -eq $deletedStill)
+
+    # ---------- 19. 优雅关闭（仅本机） ----------
+    Write-Host ""
+    Write-Host "[19] /admin/shutdown 仅本机可访问"
     $r = Call-Api "POST" "/admin/shutdown"
     Check "本机关停 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
     $proc.WaitForExit(8000) | Out-Null
@@ -560,9 +692,9 @@ try {
     Check "日志出现『服务已停止』" ($logText -match "服务已停止") "log=[$logText]"
     Check "日志无 ERROR/FATAL" (($logText -notmatch "\[FATAL\]") -and ($logText -notmatch "FSException")) ""
 
-    # ---------- 16. 重启后数据仍在 ----------
+    # ---------- 20. 重启后数据仍在 ----------
     Write-Host ""
-    Write-Host "[16] 重启后持久性"
+    Write-Host "[20] 重启后持久性"
     $proc = Start-Server $dataRel "2"
     Check "重启后服务就绪" ($null -ne $proc)
     $r = Call-Api "POST" "/api/v1/auth/login" @{ phone = "13800000000"; password = "newpassword1" }

@@ -36,3 +36,6 @@
 
 # 临时提交信息文件（PS 5.1 不支持 heredoc，只能落文件后 -F）
 .commitmsg*.tmp
+
+# 生成给仓颉团队的证据包（由 server/build/make-report-zip.ps1 生成，不入库）
+/cangjie-runtime-crash-report-*.zip
