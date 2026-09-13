@@ -1,0 +1,31 @@
+/node_modules
+/oh_modules
+/local.properties
+/.idea
+**/build
+/.hvigor
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+**/cj_res
+**/*.cj.macrocall
+**/ability_mainability_entry.cj
+**/module_**_entry.cj
+**/IDL_Dependencies_List~
+**/build-script-cache
+
+# ── 服务端 ─────────────────────────────────────────────
+# 运行期数据（true 成员数据，绝不入库）
+/server/data
+# 证书与私钥（自签证书的 key.pem 是机密）
+/server/certs
+# 编译期 API 探针（一次性，结论已固化到 server/API-NOTES.md）
+/server/.probe
+
+# ── 独立仓库，不属于本项目 ──────────────────────────────
+# cjenv 是另一个项目（自成 git 仓库，origin = gitcode.com/xuguowei/cjenv.git）。
+# 若在根仓库里 add 它，git 只会记一个 gitlink，clone 下来是个空壳。
+/cjenv/
