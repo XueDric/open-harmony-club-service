@@ -148,6 +148,34 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 | 16 | **`-Body` 传字符串会按 ANSI 发送** | 中文请求体到达服务端就是乱码（表现为"改名字成功了但名字没变"）。必须 `[System.Text.Encoding]::UTF8.GetBytes($json)` + `Content-Type: application/json; charset=utf-8` |
 | 17 | 响应里的中文比较 | 配合上一条：请求体乱码时，返回的中文自然也对不上，容易被误判成服务端 bug |
 | 18 | `ConvertFrom-Json` 单元素数组会退化成对象 | 断言 `.Count` 在 PS 5.1 下对单对象返回 1，可用但要心里有数 |
+| 19 | **cjenv 切换 SDK 会打断本项目的构建** | 它会改写 `CANGJIE_HOME` 并把 shims 塞进 PATH。若 `CANGJIE_HOME` 指向别的 SDK（如 1.0.5）而 PATH 里的 `cjc` 仍是 `D:\Cangjie` 的 1.1.3，就会出现**前端 1.1.3 + 后端 LLVM 1.0.5** 串台：`LLVM ERROR: Broken module found … @llvm.cj.get.vtable.func … opt.exe 崩溃`。看起来像编译器 bug，实际是环境串台。`build.ps1` 已显式钉死 `CANGJIE_HOME` 与 PATH |
+
+---
+
+## 5. 环境级故障：本机仓颉 exe 启动即崩（2026-09-13 晚）
+
+**现象**：**所有**仓颉可执行文件启动即崩——本项目 exe、轻舟框架 exe、`cjenv.exe`，
+以及 1.0.5 / 1.1.3 两套 SDK 的产物，一律 `exit=-1073741819`（0xC0000005 访问违例）。
+用一个"进 `main` 就写文件"的探针确认：**`main()` 根本没执行**；stdout 全空（缓冲未 flush，
+所以短命令"没有输出"是假象）。长驻服务同样起不来（`/health` 连不上）。
+
+**已排除**：与本项目代码无关（空 hello world 同样崩）· 与 SDK 版本无关（1.0.5 与 1.1.3 都崩）·
+与目录 / PATH / `CANGJIE_HOME` 无关 · 无 AppCompat shim · 无 AppInit 注入 ·
+WER 的 `LoadedModule` 里**没有任何第三方模块**（只有系统 DLL + 仓颉运行时）·
+`msvcrt` 是 **KnownDLL**（同目录放同名 DLL 无效，拷全 51 个运行时 DLL 也无效）。
+
+**证据**：事件日志里故障模块恒为 `C:\WINDOWS\System32\msvcrt.dll`，偏移恒为 `0x62f1e`。
+**时间线**：21:40 重启后开始；当日 13:58 之前一切正常（M2 的 165 项冒烟测试全绿）。
+故障时 `PendingFileRenameOperations` 仍非空 → 系统更新尚未收尾。
+
+**结论**：机器级环境问题，不是代码问题。建议按顺序处理：
+1. **再重启一次**（让挂起的文件替换完成）
+2. 仍崩 → **卸载最近的更新**（KB5124010 / KB5124009，9/12–9/13 安装）
+3. 仍崩 → 临时退出 **360 安全卫士**再试（WER 无注入迹象，但驱动层拦截仍可能）
+4. 或**换一台机器**验证
+
+> 恢复后请立刻跑：`.\build\club-server.exe test` 与 `tests\smoke.ps1`，
+> 确认 M3 的任务接口在真实运行时下通过。
 
 ---
 

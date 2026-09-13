@@ -11,6 +11,7 @@ package qingzhou
  * 以及会长/副会长可见的管理视图里出现——成本为零的隐私最小化。
  */
 
+import std.collection.*
 import stdx.encoding.json.*
 
 /* 人：名录、任务负责人、课题负责人等所有出现"人"的地方统一用它。 */
@@ -221,5 +222,99 @@ public func registerConfigView(s: Store): JsonObject {
         case None => jPutNull(o, "updated_by")
     }
     return o
+}
+
+/* ===================== Part 4 的视图 ===================== */
+
+/* 课题目录里引用一个课题时的最小形态。 */
+public func planRefObj(p: Plan): JsonObject {
+    let o = JsonObject()
+    jPutInt(o, "id", p.id)
+    jPutStr(o, "title", p.title)
+    return o
+}
+
+/*
+ * 任务所属课题的面包屑：从顶层到本级。
+ * 带 guard，避免数据异常（环形）时死循环——环形校验在 M4 的移动接口上，
+ * 但**读取路径不能假设数据一定干净**。
+ */
+public func planPath(s: Store, planId: Int64): JsonArray {
+    let chain = ArrayList<Plan>()
+    var cur = planId
+    var guard: Int64 = 0
+    while (cur > 0 && guard < 32) {
+        match (s.plans.get(cur)) {
+            case Some(p) =>
+                chain.add(p)
+                cur = p.parent_id
+            case None => cur = 0
+        }
+        guard += 1
+    }
+    let arr = JsonArray()
+    var i = chain.size - 1
+    while (i >= 0) {
+        arr.add(planRefObj(chain[i]))
+        i -= 1
+    }
+    return arr
+}
+
+/* TaskBrief（api-design §4.9）。`is_overdue` 与 `blocked` 都是服务端算好的派生量。 */
+public func taskBrief(s: Store, t: Task, now: Int64): JsonObject {
+    let o = JsonObject()
+    jPutInt(o, "id", t.id)
+    jPutStr(o, "title", t.title)
+    jPutStr(o, "status", t.status)
+    match (s.members.get(t.owner_id)) {
+        case Some(m) => jPutObj(o, "owner", memberBrief(s, m))
+        case None => jPutNull(o, "owner")
+    }
+    if (t.dept_id > 0) {
+        jPutObj(o, "dept", deptBriefObj(s, t.dept_id))
+    } else {
+        jPutNull(o, "dept")
+    }
+    if (t.plan_id > 0) {
+        match (s.plans.get(t.plan_id)) {
+            case Some(p) => jPutObj(o, "plan", planRefObj(p))
+            case None => jPutNull(o, "plan")
+        }
+    } else {
+        jPutNull(o, "plan")
+    }
+    jPutTime(o, "due_at", t.due_at)
+    jPutBool(o, "is_overdue", isTaskOverdue(t, now))
+    jPutBool(o, "blocked", t.status == "blocked")
+    jPutTime(o, "updated_at", t.updated_at)
+    return o
+}
+
+/* TaskDetail = TaskBrief + desc / blocker / plan_path / created_by / created_at / completed_at */
+public func taskDetail(s: Store, t: Task, now: Int64): JsonObject {
+    let o = taskBrief(s, t, now)
+    jPutStr(o, "desc", t.desc)
+    if (t.blocker.size > 0) {
+        jPutStr(o, "blocker", t.blocker)
+    } else {
+        jPutNull(o, "blocker")
+    }
+    o.put("plan_path", planPath(s, t.plan_id))
+    match (s.members.get(t.created_by)) {
+        case Some(m) => jPutObj(o, "created_by", memberBrief(s, m))
+        case None => jPutNull(o, "created_by")
+    }
+    jPutTime(o, "created_at", t.created_at)
+    jPutTime(o, "completed_at", t.completed_at)
+    return o
+}
+
+public func taskArr(s: Store, list: Array<Task>, now: Int64): JsonArray {
+    let arr = JsonArray()
+    for (t in list) {
+        arr.add(taskBrief(s, t, now))
+    }
+    return arr
 }
 

@@ -651,6 +651,141 @@ func testPaging(t: TR): Unit {
     t.ok("size<1 归 50", containsAscii(pZero.toString(), "\"size\":50"))
 }
 
+/* ===================== Part 4 的任务 ===================== */
+
+func testTasks(t: TR): Unit {
+    println("- tasks 分组/逾期/派生量")
+    let s = Store("build/test-data-tasks")
+    /* now = 2026-09-20T18:00:00+08:00；本地日界 todayStart = 1789833600 */
+    let now: Int64 = 1789898400
+    let todayStart = startOfLocalDay(now)
+    let tomorrow = todayStart + 86400
+    let weekEnd = todayStart + 7 * 86400
+
+    let owner: Int64 = 7
+    let other: Int64 = 8
+
+    func mkTask(id: Int64, ownerId: Int64, due: Int64, status: String): Task {
+        let x = Task()
+        x.id = id
+        x.title = "T${id}"
+        x.owner_id = ownerId
+        x.dept_id = 2
+        x.status = status
+        x.due_at = due
+        x.created_by = 1
+        x.created_at = now
+        x.updated_at = now
+        return x
+    }
+
+    let t1 = mkTask(1, owner, now - 3600, "doing")
+    let t2 = mkTask(2, owner, now + 3600, "todo")
+    let t3 = mkTask(3, owner, tomorrow + 3600, "todo")
+    let t4 = mkTask(4, owner, weekEnd + 3600, "todo")
+    let t5 = mkTask(5, owner, 0, "todo")
+    let t6 = mkTask(6, owner, now + 7200, "blocked")
+    let t7 = mkTask(7, owner, now - 7200, "done")
+    let t8 = mkTask(8, other, now + 3600, "todo")
+    let t9 = mkTask(9, owner, now + 3600, "todo")
+    t9.deleted_at = now
+    s.tasks[1] = t1
+    s.tasks[2] = t2
+    s.tasks[3] = t3
+    s.tasks[4] = t4
+    s.tasks[5] = t5
+    s.tasks[6] = t6
+    s.tasks[7] = t7
+    s.tasks[8] = t8
+    s.tasks[9] = t9
+
+    let g = groupMine(s, owner, now)
+    t.eqi("逾期组", g.overdue.size, 1)
+    t.eqs("逾期组内容", g.overdue[0].title, "T1")
+    t.eqi("今天组 = T2 + T6", g.due_today.size, 2)
+    t.eqs("今天组按截止升序", g.due_today[0].title, "T2")
+    t.eqi("本周组", g.due_week.size, 1)
+    t.eqi("以后组", g.later.size, 1)
+    t.eqi("无截止组", g.no_due.size, 1)
+    t.eqi("阻塞组（与今天组并存，不互斥）", g.blocked.size, 1)
+    t.eqs("阻塞组内容", g.blocked[0].title, "T6")
+    t.eqi("未完成总数（不含 done/deleted/他人）", g.open_total, 6)
+
+    /* 逾期是派生量 */
+    t.ok("未完成且过期 = 逾期", isTaskOverdue(t1, now))
+    t.ok("已完成不算逾期", !isTaskOverdue(t7, now))
+    t.ok("无截止不算逾期", !isTaskOverdue(t5, now))
+
+    t.ok("状态枚举合法", isTaskStatus("blocked"))
+    t.ok("状态枚举非法", !isTaskStatus("doing50"))
+
+    /* 排序：无截止排最后 */
+    let mixed = ArrayList<Task>()
+    mixed.add(t5)
+    mixed.add(t1)
+    mixed.add(t4)
+    let sorted = sortedTasksByDue(mixed)
+    t.eqs("有截止的在前", sorted[0].title, "T1")
+    t.eqs("无截止排最后", sorted[2].title, "T5")
+
+    /* 课题子树（M4 的多级课题要靠它） */
+    let p1 = Plan()
+    p1.id = 1
+    p1.title = "根"
+    p1.owner_id = 1
+    p1.dept_id = 2
+    let p2 = Plan()
+    p2.id = 2
+    p2.title = "子"
+    p2.parent_id = 1
+    p2.owner_id = 1
+    let p3 = Plan()
+    p3.id = 3
+    p3.title = "孙"
+    p3.parent_id = 2
+    p3.owner_id = 1
+    let p4 = Plan()
+    p4.id = 4
+    p4.title = "另一棵树"
+    p4.owner_id = 1
+    p4.dept_id = 2
+    s.plans[1] = p1
+    s.plans[2] = p2
+    s.plans[3] = p3
+    s.plans[4] = p4
+    let sub = planSubtreeIds(s, 1)
+    t.eqi("子树含自身 + 2 个后代", sub.size, 3)
+    t.ok("子树含孙节点", sub.contains(3))
+    t.ok("子树不含另一棵树", !sub.contains(4))
+
+    let path = planPath(s, 3)
+    t.eqi("面包屑 3 级", path.size(), 3)
+    match (path.get(0)) {
+        case Some(v) => t.ok("面包屑顶层在前", containsAscii(v.toString(), "根"))
+        case None => t.ok("面包屑顶层在前", false)
+    }
+
+    /* TaskBrief / TaskDetail 的派生量与隐私 */
+    t6.blocker = "等场地审批"
+    let brief = taskBrief(s, t6, now).toString()
+    t.ok("brief: blocked=true", containsAscii(brief, "\"blocked\":true"))
+    t.ok("brief: is_overdue=false", containsAscii(brief, "\"is_overdue\":false"))
+    t.ok("brief: 不含手机号", !containsAscii(brief, "\"phone\""))
+    let detail = taskDetail(s, t6, now).toString()
+    t.ok("detail 含 blocker", containsAscii(detail, "等场地审批"))
+    t.ok("detail 含 plan_path", containsAscii(detail, "plan_path"))
+    t.ok("detail 含 completed_at", containsAscii(detail, "completed_at"))
+
+    /* 幂等表 */
+    idemPut(s, "task", "tok-1", 42, now)
+    let hit1 = idemHit(s, "task", "tok-1", now + 100)
+    t.ok("24h 内命中", hit1.isSome())
+    t.eqi("命中的是首次创建的资源", hit1 ?? -1, 42)
+    t.ok("不同 kind 不串", idemHit(s, "plan", "tok-1", now + 100).isNone())
+    t.ok("超过 24h 失效", idemHit(s, "task", "tok-1", now + 86401).isNone())
+    t.ok("失效后被清理", !s.idem.contains("task:tok-1"))
+}
+
 /* ===================== 入口 ===================== */
 
 public func runTests(): Int64 {
@@ -665,6 +800,7 @@ public func runTests(): Int64 {
     testViews(t)
     testPart3Views(t)
     testPaging(t)
+    testTasks(t)
     println("")
     println("PASS ${t.pass} / FAIL ${t.fail}")
     if (t.fail == 0) {

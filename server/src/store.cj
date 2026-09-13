@@ -296,6 +296,14 @@ func tokenFromJson(o: JsonObject): TokenRecord {
     return t
 }
 
+func idemToJson(k: String, r: IdemRecord): JsonObject {
+    let o = JsonObject()
+    jPutStr(o, "key", k)
+    jPutInt(o, "resource_id", r.resource_id)
+    jPutInt(o, "created_at", r.created_at)
+    return o
+}
+
 /* ===================== 加载 / 保存 ===================== */
 
 public func storeLoad(dir: String): Store {
@@ -327,6 +335,7 @@ public func storeLoad(dir: String): Store {
             s.invite_links = linkArrFromJson(r, "invite_links")
             s.tokens = tokenArrFromJson(r, "tokens")
             s.login_fail = loginFailArrFromJson(r, "login_fail")
+            s.idem = idemArrFromJson(r, "idem")
             return s
         case None =>
             /* 绝不静默降级为空库：下一次保存会把真实数据覆盖掉。 */
@@ -499,6 +508,33 @@ func loginFailArrFromJson(o: JsonObject, key: String): HashMap<String, LoginFail
     return m
 }
 
+func idemArrFromJson(o: JsonObject, key: String): HashMap<String, IdemRecord> {
+    let m = HashMap<String, IdemRecord>()
+    let a = arrOf(o, key)
+    var i: Int64 = 0
+    let n = a.size()
+    while (i < n) {
+        match (a.get(i)) {
+            case Some(v) =>
+                try {
+                    let obj = v.asObject()
+                    let k = reqStrOr(obj, "key", "")
+                    let r = IdemRecord()
+                    r.resource_id = reqIntOr(obj, "resource_id", 0)
+                    r.created_at = reqIntOr(obj, "created_at", 0)
+                    if (k.size > 0) {
+                        m[k] = r
+                    }
+                } catch (e: Exception) {
+                    ()
+                }
+            case None => ()
+        }
+        i += 1
+    }
+    return m
+}
+
 /*
  * 原子落盘：写 tmp → 备份旧文件 → rename 覆盖。
  * 任何一步失败都抛异常（宁可让调用方看到错误，也不要"看起来保存成功了"）。
@@ -562,6 +598,12 @@ public func storeSave(s: Store): Unit {
         fails.add(o)
     }
     root.put("login_fail", fails)
+
+    let idems = JsonArray()
+    for ((k, r) in s.idem) {
+        idems.add(idemToJson(k, r))
+    }
+    root.put("idem", idems)
 
     let text = root.toString()
     /* 注意：Cangjie 的 Directory.create 在目录已存在时**照样抛异常**
@@ -721,4 +763,112 @@ public func deptNameTaken(s: Store, name: String, exceptId: Int64): Bool {
         }
     }
     return false
+}
+
+/* ===================== 任务辅助（Part 4） ===================== */
+
+/* 状态只有 4 档（v1-scope 规则 2：不做进度百分比）。 */
+public func isTaskStatus(st: String): Bool {
+    if (st == "todo") {
+        return true
+    }
+    if (st == "doing") {
+        return true
+    }
+    if (st == "blocked") {
+        return true
+    }
+    if (st == "done") {
+        return true
+    }
+    return false
+}
+
+/*
+ * 逾期是**派生量**（规则 15），由 due_at 与当前时间算出，永不落盘。
+ * 已完成的任务不再标逾期——"做完了"这个事实优先于"当时晚了"。
+ */
+public func isTaskOverdue(t: Task, now: Int64): Bool {
+    if (t.status == "done") {
+        return false
+    }
+    return isOverdue(t.due_at, now)
+}
+
+/* 按截止时间升序；无截止的排最后（api-design §4.1）。 */
+public func sortedTasksByDue(list: ArrayList<Task>): Array<Task> {
+    let arr = list.toArray()
+    sortByKey<Task>(arr, { t: Task =>
+        if (t.due_at > 0) {
+            t.due_at * 1000 + t.id
+        } else {
+            9000000000000 + t.id
+        }
+    })
+    return arr
+}
+
+/*
+ * 课题子树的所有 id（含自身）。
+ * `GET /tasks?plan_id=` 默认包含整棵子树——多级课题下，
+ * 按父课题筛选却只看到本级任务，是不符合直觉的。
+ */
+public func planSubtreeIds(s: Store, rootId: Int64): HashSet<Int64> {
+    let out = HashSet<Int64>()
+    let queue = ArrayList<Int64>()
+    queue.add(rootId)
+    out.add(rootId)
+    var i: Int64 = 0
+    while (i < queue.size) {
+        let cur = queue[i]
+        i += 1
+        for ((_k, p) in s.plans) {
+            if (p.parent_id == cur && !out.contains(p.id)) {
+                out.add(p.id)
+                queue.add(p.id)
+            }
+        }
+    }
+    return out
+}
+
+/* ===================== 幂等（api-design §1.9） ===================== */
+
+public let IDEM_TTL: Int64 = 86400
+
+func idemKey(kind: String, token: String): String {
+    return "${kind}:${token}"
+}
+
+/* 24 小时内命中则返回首次创建的资源 id。 */
+public func idemHit(s: Store, kind: String, token: String, now: Int64): ?Int64 {
+    let k = idemKey(kind, token)
+    match (s.idem.get(k)) {
+        case Some(rec) =>
+            if (now - rec.created_at <= IDEM_TTL) {
+                return Some(rec.resource_id)
+            }
+            s.idem.remove(k)
+            return None
+        case None => return None
+    }
+}
+
+public func idemPut(s: Store, kind: String, token: String, resourceId: Int64, now: Int64): Unit {
+    let rec = IdemRecord()
+    rec.resource_id = resourceId
+    rec.created_at = now
+    s.idem[idemKey(kind, token)] = rec
+    /* 顺带清理过期项，避免这张表无限增长 */
+    if (s.idem.size > 200) {
+        let doomed = ArrayList<String>()
+        for ((k, r) in s.idem) {
+            if (now - r.created_at > IDEM_TTL) {
+                doomed.add(k)
+            }
+        }
+        for (k in doomed) {
+            s.idem.remove(k)
+        }
+    }
 }

@@ -11,10 +11,9 @@
 #   .\build.ps1 -NoDll          只编译（本机已装好 DLL 时更快）
 
 param(
-    [string]$Cjc        = "D:\Cangjie\bin\cjc.exe",
-    [string]$Stdx       = "E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx",
-    [string]$QingZhou   = "E:\cangjie\qingzhou",
-    [string]$RuntimeDir = "D:\Cangjie\runtime\lib\windows_x86_64_cjnative",
+    [string]$CangjieHome = "D:\Cangjie",
+    [string]$Stdx        = "E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx",
+    [string]$QingZhou    = "E:\cangjie\qingzhou",
     [switch]$NoDll
 )
 
@@ -25,9 +24,23 @@ $src  = Join-Path $root "src"
 $out  = Join-Path $root "build"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
+$Cjc        = Join-Path $CangjieHome "bin\cjc.exe"
+$RuntimeDir = Join-Path $CangjieHome "runtime\lib\windows_x86_64_cjnative"
+
 if (-not (Test-Path $Cjc))  { throw "找不到编译器：$Cjc" }
 if (-not (Test-Path $Stdx)) { throw "找不到 stdx：$Stdx" }
 if (-not (Test-Path $QingZhou)) { throw "找不到轻舟源码：$QingZhou" }
+
+# ── 把工具链钉死（**不要删**） ───────────────────────────────────────────
+# 本机装了 cjenv（另一个项目：仓颉 SDK 版本管理器），它会改写 CANGJIE_HOME 并把
+# 自己的 shims 塞进 PATH。一旦 CANGJIE_HOME 指向别的 SDK（例如 1.0.5），
+# 而 PATH 里的 cjc 仍是 D:\Cangjie 的 1.1.3，就会出现
+#   "前端 1.1.3 + 后端 LLVM 1.0.5" 的串台：
+#   LLVM ERROR: Broken module found … @llvm.cj.get.vtable.func … opt.exe 崩溃
+# 这类错误看起来像编译器 bug，实际只是环境串台。这里显式指定本次编译用的工具链。
+$env:CANGJIE_HOME = $CangjieHome
+$env:PATH = (Join-Path $CangjieHome "bin") + ";" +
+            (Join-Path $CangjieHome "third_party\llvm\bin") + ";" + $env:PATH
 
 $libs = (Get-ChildItem "$Stdx\libstdx*.a" | ForEach-Object { "-l:$($_.Name)" })
 

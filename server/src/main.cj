@@ -246,6 +246,31 @@ func buildApp(s: Store, box: HandleBox): QingZhouApp {
         .delete("/api/v1/dept-invite-links/:token", { ctx: Context, _: () -> Unit =>
             handleInviteLinkDisable(ctx, s)
         })
+        /* Part 4 · 任务（8） */
+        .get("/api/v1/tasks/mine", { ctx: Context, _: () -> Unit =>
+            handleTasksMine(ctx, s)
+        })
+        .post("/api/v1/tasks/lookup", { ctx: Context, _: () -> Unit =>
+            handleTaskLookup(ctx, s)
+        })
+        .get("/api/v1/tasks", { ctx: Context, _: () -> Unit =>
+            handleTaskList(ctx, s)
+        })
+        .post("/api/v1/tasks", { ctx: Context, _: () -> Unit =>
+            handleTaskCreate(ctx, s)
+        })
+        .get("/api/v1/tasks/:id", { ctx: Context, _: () -> Unit =>
+            handleTaskDetail(ctx, s)
+        })
+        .patch("/api/v1/tasks/:id", { ctx: Context, _: () -> Unit =>
+            handleTaskUpdate(ctx, s)
+        })
+        .put("/api/v1/tasks/:id/status", { ctx: Context, _: () -> Unit =>
+            handleTaskStatus(ctx, s)
+        })
+        .delete("/api/v1/tasks/:id", { ctx: Context, _: () -> Unit =>
+            handleTaskDelete(ctx, s)
+        })
 
     /*
      * 统一错误出口：
