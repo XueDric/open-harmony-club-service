@@ -623,7 +623,7 @@ public func presidentCount(s: Store): Int64 {
     return n
 }
 
-/* 待分配列表（先来先处理）。 */
+/* 待分配列表（先来先处理，即按 id 升序 = 注册顺序）。 */
 public func pendingMembers(s: Store): Array<Member> {
     let out = ArrayList<Member>()
     for ((_k, m) in s.members) {
@@ -632,22 +632,93 @@ public func pendingMembers(s: Store): Array<Member> {
         }
     }
     let arr = out.toArray()
-    sortMembersBy(arr, { m: Member => m.id })
+    sortByKey<Member>(arr, { m: Member => m.id })
     return arr
 }
 
-/* 按给定键对成员数组排序（简单插入排序；社团规模，够用且无额外依赖）。 */
-func sortMembersBy(arr: Array<Member>, key: (Member) -> Int64): Unit {
+/* 按 Int64 键做插入排序。社团规模（几十~几百条），够用且无额外依赖。 */
+func sortByKey<T>(arr: Array<T>, key: (T) -> Int64): Unit {
     var i: Int64 = 1
     while (i < arr.size) {
         let cur = arr[i]
-        let curKey = key(cur)
+        let ck = key(cur)
         var j: Int64 = i - 1
-        while (j >= 0 && key(arr[j]) > curKey) {
+        while (j >= 0 && key(arr[j]) > ck) {
             arr[j + 1] = arr[j]
             j -= 1
         }
         arr[j + 1] = cur
         i += 1
     }
+}
+
+/* 部门展示顺序：sort → id。 */
+public func sortedDepartments(s: Store): Array<Department> {
+    let out = ArrayList<Department>()
+    for ((_k, d) in s.departments) {
+        out.add(d)
+    }
+    let arr = out.toArray()
+    sortByKey<Department>(arr, { d: Department => d.sort * 1000000 + d.id })
+    return arr
+}
+
+/* 成员展示顺序：部门 sort → id（未分配部门排最后）。 */
+public func sortedMembers(s: Store, list: ArrayList<Member>): Array<Member> {
+    let arr = list.toArray()
+    sortByKey<Member>(arr, { m: Member =>
+        var ds: Int64 = 999
+        match (s.departments.get(m.dept_id)) {
+            case Some(d) => ds = d.sort
+            case None => ds = 999
+        }
+        ds * 1000000 + m.id
+    })
+    return arr
+}
+
+/* 某成员名下**未完成**的任务——移出社团前必须先转交（api-design §3.2）。 */
+public func openTasksOf(s: Store, memberId: Int64): Array<Task> {
+    let out = ArrayList<Task>()
+    for ((_k, t) in s.tasks) {
+        if (t.deleted_at > 0 || t.owner_id != memberId || t.status == "done") {
+            continue
+        }
+        out.add(t)
+    }
+    let arr = out.toArray()
+    sortByKey<Task>(arr, { t: Task => t.id })
+    return arr
+}
+
+/* 部门下还有多少"没退出"的成员（删除部门的前置检查）。 */
+public func activeMemberCountOfDept(s: Store, deptId: Int64): Int64 {
+    var n: Int64 = 0
+    for ((_k, m) in s.members) {
+        if (m.dept_id == deptId && m.status != "disabled") {
+            n += 1
+        }
+    }
+    return n
+}
+
+/* 部门下还有多少顶层课题（Plan.dept_id 只存在顶层，见 v1-scope 规则 19）。 */
+public func topPlanCountOfDept(s: Store, deptId: Int64): Int64 {
+    var n: Int64 = 0
+    for ((_k, p) in s.plans) {
+        if (p.parent_id == 0 && p.dept_id == deptId) {
+            n += 1
+        }
+    }
+    return n
+}
+
+/* 部门重名检查（改名与新建共用）。 */
+public func deptNameTaken(s: Store, name: String, exceptId: Int64): Bool {
+    for ((_k, d) in s.departments) {
+        if (d.id != exceptId && d.name == name) {
+            return true
+        }
+    }
+    return false
 }

@@ -220,23 +220,26 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 > 客户端由小组其他成员并行推进；本工作区当前只做服务端。轻舟上游更新没等到，
 > 继续使用 **`1cad35b` + 本地 DEF-1 补丁**（补丁**不能撤**，撤了就编译不过）。
 
-### 11.1 M1 骨架已完成并验证
+### 11.1 已完成并验证：M1 骨架 + M2 组织与成员
 
-代码在 `server/`（13 个源文件 / 2524 行），详见 `server/README.md`。
+代码在 `server/`（19 个源文件），详见 `server/README.md`。
+**接口进度 24 / 39**（认证 5 + 组织与成员 19）；剩余：任务 8、课题 6、运维 1（`/health` 已做）。
 
 | 验证 | 结果 |
 | --- | --- |
 | 从零构建 | ✅ 通过 |
-| 单测 `club-server.exe test` | ✅ **PASS 130 / FAIL 0** |
-| 冒烟测试（真实 HTTP，`tests/smoke.ps1`） | ✅ **PASS 58 / FAIL 0** |
+| 单测 `club-server.exe test` | ✅ **PASS 164 / FAIL 0** |
+| 冒烟测试（真实 HTTP，`tests/smoke.ps1`） | ✅ **PASS 165 / FAIL 0** |
 | 部署文件集 | exe 10.65 MB + 4 个 DLL ≈ **18.4 MB**（与 §2 的 18.5 MB 吻合） |
 
-已落地：构建链路 · Store 与原子落盘 · 统一响应/错误码 · 时间与时区（自实现历法，与 .NET 独立对拍）·
-**`can(member, action, target)`** · Part 2 认证 5 接口 · `/health` · `/admin/shutdown`（限本机）。
+- **M1**：构建链路 · Store 与原子落盘 · 统一响应/错误码 · 时间与时区（自实现历法，与 .NET 独立对拍）·
+  **`can(member, action, target)`** · Part 2 认证 5 接口 · `/health` · `/admin/shutdown`（限本机）。
+- **M2**：部门增删改（会长独占）· 成员名录/详情/编辑 · 移出社团 · 待分配与**批量分配**（逐条报告、部分成功）·
+  **会长移交原子性**与「最后一个会长」保护 · 重置密码（含审计日志）· 注册口令查看/更换/轮换 · 招募链接。
 
-**测试自己抓到的两个真 bug**（不是预置的）：
+**测试自己抓到的真 bug**（不是预置的，都是会真出事的那种）：
 `Directory.create(recursive:true)` 在目录已存在时照样抛异常（会让第二次落盘直接崩）；
-副会长被误允许更换注册口令。
+副会长被误允许更换注册口令；空目录 `remove` 抛异常导致单测中断。
 
 ### 11.2 本轮文档修订（先改文档再改代码）
 
@@ -247,6 +250,11 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | 3 | `Member` 新增 **`dept_hint`** 字段（招募链接的部门预填） | `v1-scope` §5 · `api-design` §3.3 |
 | 4 | 密码长度**按字节**校验的口径说明 | `api-design` §2.3 注 5 |
 | 5 | `client_token` 幂等的落地范围：注册靠手机号唯一性挡住重复；幂等落在任务/课题创建类接口（M3/M4） | `api-design` §1.9 · `v1-scope` v0.11 说明 |
+| 6 | `MEMBER_HAS_OPEN_TASKS` 的任务清单放 **`error.fields.tasks`**；该接口幂等 | `api-design` §3.2 |
+| 7 | `DELETE /depts/{id}` 的 `DEPT_NOT_EMPTY` **也检查顶层课题**；已退出成员/历史任务的 `dept_id` 置 0 | `api-design` §3.1 |
+| 8 | `DELETE /dept-invite-links/{token}` 是**停用**（`enabled=false`，记录保留）且**幂等** | `api-design` §3.7 |
+| 9 | `PATCH /members/{id}` 字段级权限；待分配成员只接受 `name` | `api-design` §3.2 |
+| 10 | `assign` 对 `disabled` 成员即"恢复"，成功后清空 `dept_hint` | `api-design` §3.3 |
 
 `v1-scope.md` 顶部修订记录已加 **v0.11**。
 
@@ -254,8 +262,8 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 
 | 里程碑 | 内容 | 状态 |
 | --- | --- | --- |
-| M2 | Part 3 组织与成员 19 个接口（含**批量分配**、**会长移交原子性**、最后一个会长保护、注册口令、招募链接） | 待开工 |
-| M3 | Part 4 任务 8 个接口 | 待排 |
+| ~~M2~~ | ~~Part 3 组织与成员 19 个接口~~ | ✅ **已完成** |
+| M3 | Part 4 任务 8 个接口（`/tasks/mine` 服务端分组、`BLOCKER_REQUIRED`、软删除、`/tasks/lookup`） | 待开工 |
 | M4 | Part 5 课题 6 个接口（环形校验、深度 6、删除上提、O(n) 聚合） | 待排 |
 | M5 | 打包部署 · 带 SAN 自签证书 · TLS 关卡 | **卡在服务器步骤 0**（架构 / 公网 IP / 端口） |
 

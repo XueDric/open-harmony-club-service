@@ -113,3 +113,113 @@ public func isKnownRole(role: String): Bool {
     }
     return false
 }
+
+/* ===================== Part 3 的视图 ===================== */
+
+/*
+ * 部门（含部长与人数）。
+ * `lead` 现查现算：v0.6 起**部长身份只由 `Member.role = lead` 表达**，
+ * Department 表里没有、也不该有 lead_id（同一事实存两份必然不一致）。
+ */
+public func deptView(s: Store, d: Department): JsonObject {
+    let o = JsonObject()
+    jPutInt(o, "id", d.id)
+    jPutStr(o, "name", d.name)
+    jPutInt(o, "sort", d.sort)
+    var lead: ?Member = None
+    var count: Int64 = 0
+    for ((_k, m) in s.members) {
+        if (m.dept_id != d.id || m.status != "active") {
+            continue
+        }
+        count += 1
+        if (m.role == "lead") {
+            lead = Some(m)
+        }
+    }
+    match (lead) {
+        case Some(lm) => jPutObj(o, "lead", memberBrief(s, lm))
+        case None => jPutNull(o, "lead")
+    }
+    jPutInt(o, "member_count", count)
+    return o
+}
+
+/* 部门列表响应体（不分页：只有 4 个组织为一个量级）。 */
+public func deptListView(s: Store): JsonObject {
+    let list = sortedDepartments(s)
+    let arr = JsonArray()
+    for (d in list) {
+        arr.add(deptView(s, d))
+    }
+    let data = JsonObject()
+    data.put("items", arr)
+    return data
+}
+
+/* 成员详情：MemberBrief + 计数摘要（只给计数，明细属于 Part 4 的列表接口）。 */
+public func memberDetailView(s: Store, m: Member): JsonObject {
+    let o = JsonObject()
+    jPutObj(o, "member", memberBrief(s, m))
+    var owned: Int64 = 0
+    var open: Int64 = 0
+    for ((_k, t) in s.tasks) {
+        if (t.deleted_at > 0 || t.owner_id != m.id) {
+            continue
+        }
+        owned += 1
+        if (t.status != "done") {
+            open += 1
+        }
+    }
+    var plans: Int64 = 0
+    for ((_k, p) in s.plans) {
+        if (p.owner_id == m.id) {
+            plans += 1
+        }
+    }
+    let st = JsonObject()
+    jPutInt(st, "owned_tasks", owned)
+    jPutInt(st, "open_tasks", open)
+    jPutInt(st, "owned_plans", plans)
+    jPutObj(o, "stats", st)
+    return o
+}
+
+/* 待分配成员：MemberBrief + 来源部门提示 + 注册时间。 */
+public func pendingView(s: Store, m: Member): JsonObject {
+    let o = memberBrief(s, m)
+    if (m.dept_hint > 0) {
+        jPutObj(o, "dept_hint", deptBriefObj(s, m.dept_hint))
+    } else {
+        jPutNull(o, "dept_hint")
+    }
+    jPutTime(o, "registered_at", m.joined_at)
+    return o
+}
+
+/* 招募链接。url 由请求的 Host 头拼出来，避免把域名写死在配置里。 */
+public func inviteLinkView(s: Store, l: DeptInviteLink, url: String): JsonObject {
+    let o = JsonObject()
+    jPutStr(o, "token", l.token)
+    if (url.size > 0) {
+        jPutStr(o, "url", url)
+    }
+    jPutObj(o, "dept", deptBriefObj(s, l.dept_id))
+    jPutBool(o, "enabled", l.enabled)
+    jPutTime(o, "created_at", l.created_at)
+    return o
+}
+
+/* 注册配置（仅会长 / 副会长可读）。 */
+public func registerConfigView(s: Store): JsonObject {
+    let o = JsonObject()
+    jPutStr(o, "code", s.register_code)
+    jPutTime(o, "updated_at", s.register_code_at)
+    match (s.members.get(s.register_code_by)) {
+        case Some(m) => jPutObj(o, "updated_by", memberBrief(s, m))
+        case None => jPutNull(o, "updated_by")
+    }
+    return o
+}
+

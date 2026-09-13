@@ -186,6 +186,66 @@ func buildApp(s: Store, box: HandleBox): QingZhouApp {
         .put("/api/v1/auth/password", { ctx: Context, _: () -> Unit =>
             handleChangePassword(ctx, s)
         })
+        /* Part 3 · 组织与成员（19） */
+        .get("/api/v1/depts", { ctx: Context, _: () -> Unit =>
+            handleDeptList(ctx, s)
+        })
+        .post("/api/v1/depts", { ctx: Context, _: () -> Unit =>
+            handleDeptCreate(ctx, s)
+        })
+        .patch("/api/v1/depts/:id", { ctx: Context, _: () -> Unit =>
+            handleDeptUpdate(ctx, s)
+        })
+        .delete("/api/v1/depts/:id", { ctx: Context, _: () -> Unit =>
+            handleDeptDelete(ctx, s)
+        })
+        .get("/api/v1/members", { ctx: Context, _: () -> Unit =>
+            handleMemberList(ctx, s)
+        })
+        /* 静态段优先（router.cj 的 walk 先查 Static 再查 Param），
+         * 但仍显式排在 :id 之前，避免将来换路由实现时踩坑。 */
+        .get("/api/v1/members/pending", { ctx: Context, _: () -> Unit =>
+            handleMemberPending(ctx, s)
+        })
+        .post("/api/v1/members/assign-batch", { ctx: Context, _: () -> Unit =>
+            handleMemberAssignBatch(ctx, s)
+        })
+        .get("/api/v1/members/:id", { ctx: Context, _: () -> Unit =>
+            handleMemberDetail(ctx, s)
+        })
+        .patch("/api/v1/members/:id", { ctx: Context, _: () -> Unit =>
+            handleMemberUpdate(ctx, s)
+        })
+        .post("/api/v1/members/:id/disable", { ctx: Context, _: () -> Unit =>
+            handleMemberDisable(ctx, s)
+        })
+        .post("/api/v1/members/:id/assign", { ctx: Context, _: () -> Unit =>
+            handleMemberAssign(ctx, s)
+        })
+        .post("/api/v1/members/:id/transfer-presidency", { ctx: Context, _: () -> Unit =>
+            handleTransferPresidency(ctx, s)
+        })
+        .post("/api/v1/members/:id/reset-password", { ctx: Context, _: () -> Unit =>
+            handleResetPassword(ctx, s)
+        })
+        .get("/api/v1/register-config", { ctx: Context, _: () -> Unit =>
+            handleRegisterConfigGet(ctx, s)
+        })
+        .put("/api/v1/register-config/code", { ctx: Context, _: () -> Unit =>
+            handleRegisterConfigPut(ctx, s)
+        })
+        .post("/api/v1/register-config/rotate", { ctx: Context, _: () -> Unit =>
+            handleRegisterConfigRotate(ctx, s)
+        })
+        .get("/api/v1/dept-invite-links", { ctx: Context, _: () -> Unit =>
+            handleInviteLinkList(ctx, s)
+        })
+        .post("/api/v1/dept-invite-links", { ctx: Context, _: () -> Unit =>
+            handleInviteLinkCreate(ctx, s)
+        })
+        .delete("/api/v1/dept-invite-links/:token", { ctx: Context, _: () -> Unit =>
+            handleInviteLinkDisable(ctx, s)
+        })
 
     /*
      * 统一错误出口：

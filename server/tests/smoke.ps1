@@ -51,8 +51,11 @@ function Call-Api([string]$method, [string]$path, $body = $null, [string]$token 
         TimeoutSec      = 10
     }
     if ($null -ne $body) {
-        $p["ContentType"] = "application/json"
-        $p["Body"] = ($body | ConvertTo-Json -Compress)
+        # PS 5.1 的坑：Body 传字符串会按 ANSI 发送，中文到达服务端就是乱码。
+        # 必须自己转成 UTF-8 字节，并在 Content-Type 里声明 charset。
+        $json = if ($body -is [string]) { $body } else { $body | ConvertTo-Json -Compress }
+        $p["ContentType"] = "application/json; charset=utf-8"
+        $p["Body"] = [System.Text.Encoding]::UTF8.GetBytes($json)
     }
     try {
         $r = Invoke-WebRequest @p
@@ -84,6 +87,18 @@ function Call-Api([string]$method, [string]$path, $body = $null, [string]$token 
 function ErrCode($r) {
     if ($null -eq $r.json) { return "" }
     return [string]$r.json.error.code
+}
+
+# 注册一个账号
+function New-Account([string]$phone, [string]$name, [string]$pw, [string]$code) {
+    return Call-Api "POST" "/api/v1/auth/register" @{ register_code = $code; phone = $phone; name = $name; password = $pw }
+}
+
+# 登录并返回 token（失败返回空串）
+function Login-Token([string]$phone, [string]$pw) {
+    $r = Call-Api "POST" "/api/v1/auth/login" @{ phone = $phone; password = $pw }
+    if ($r.status -ne 200) { return "" }
+    return [string]$r.json.data.token
 }
 
 function Start-Server([string]$dirRel, [string]$logSuffix = "") {
@@ -276,9 +291,261 @@ try {
     $r = Call-Api "POST" "/api/v1/auth/login" "not-a-json-object"
     Check "坏请求体 -> 400" ($r.status -eq 400) "status=$($r.status)"
 
-    # ---------- 8. 优雅关闭（仅本机） ----------
+    # ---------- 8. 部门（组织） ----------
     Write-Host ""
-    Write-Host "[8] /admin/shutdown 仅本机可访问"
+    Write-Host "[8] 部门：会长独占增删改"
+    $presId = (Call-Api "GET" "/api/v1/auth/me" $null $presToken).json.data.member.id
+    $r = Call-Api "GET" "/api/v1/depts" $null $presToken
+    Check "GET /depts -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "预置 4 个组织" ($r.json.data.items.Count -eq 4) "count=$($r.json.data.items.Count)"
+    $deptOps = ($r.json.data.items | Where-Object { $_.name -eq "运营部" }).id
+    $deptPub = ($r.json.data.items | Where-Object { $_.name -eq "宣传部" }).id
+    Check "部门含 member_count（软提示）" ($null -ne $r.json.data.items[0].member_count)
+
+    $r = Call-Api "POST" "/api/v1/depts" @{ name = "技术部"; sort = 9 } $presToken
+    Check "会长新建部门 -> 201" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r)"
+    $newDept = $r.json.data.dept.id
+    $r = Call-Api "POST" "/api/v1/depts" @{ name = "技术部" } $presToken
+    Check "部门重名 -> 409 ALREADY_EXISTS" (($r.status -eq 409) -and ((ErrCode $r) -eq "ALREADY_EXISTS")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PATCH" "/api/v1/depts/$newDept" @{ name = "技术委员会"; sort = 10 } $presToken
+    Check "改名 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "改名已生效" ($r.json.data.dept.name -eq "技术委员会")
+    $r = Call-Api "PATCH" "/api/v1/depts/$newDept" @{ lead_id = 9 } $presToken
+    Check "传 lead_id -> 400（该字段不存在）" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "DELETE" "/api/v1/depts/$newDept" $null $presToken
+    Check "删除空部门 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PATCH" "/api/v1/depts/99999" @{ name = "x" } $presToken
+    Check "改不存在的部门 -> 404" (($r.status -eq 404) -and ((ErrCode $r) -eq "DEPT_NOT_FOUND")) "status=$($r.status)"
+
+    # ---------- 9. 待分配与授权（招新主线） ----------
+    Write-Host ""
+    Write-Host "[9] 待分配与授权（注册与授权分离）"
+    $leadPhone = "13900000010"
+    $memPhone  = "13900000011"
+    $newPhone  = "13900000012"
+    $r = New-Account $leadPhone "部长候选人" "leadpw123" $regCode
+    Check "注册部长候选人 -> 201" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r)"
+    $leadId = $r.json.data.member.id
+    $leadPendingToken = [string]$r.json.data.token
+    $r = New-Account $memPhone "普通成员" "mempw1234" $regCode
+    $memId = $r.json.data.member.id
+    Check "注册普通成员 -> 201" ($r.status -eq 201) "status=$($r.status)"
+    $r = New-Account $newPhone "待分配乙" "newpw1234" $regCode
+    $newId = $r.json.data.member.id
+    Check "注册待分配乙 -> 201" ($r.status -eq 201) "status=$($r.status)"
+
+    $r = Call-Api "GET" "/api/v1/members/pending" $null $presToken
+    Check "待分配列表 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "待分配含 4 人（含 M1 段注册的 13900000001）" ($r.json.data.items.Count -eq 4) "count=$($r.json.data.items.Count)"
+    Check "待分配含 registered_at" ($null -ne $r.json.data.items[0].registered_at)
+
+    $r = Call-Api "GET" "/api/v1/members/pending" $null $leadPendingToken
+    Check "pending 账号查待分配 -> 403 MEMBER_PENDING" (($r.status -eq 403) -and ((ErrCode $r) -eq "MEMBER_PENDING")) "status=$($r.status) code=$(ErrCode $r)"
+
+    $r = Call-Api "POST" "/api/v1/members/$leadId/assign" @{ dept_id = $deptOps; role = "lead" } $presToken
+    Check "分配部长 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    Check "分配后 status=active" ($r.json.data.status -eq "active")
+    Check "分配后 role=lead" ($r.json.data.role -eq "lead")
+    Check "分配后 dept 正确" ($r.json.data.dept.id -eq $deptOps)
+    $r = Call-Api "POST" "/api/v1/members/$leadId/assign" @{ dept_id = $deptOps; role = "lead" } $presToken
+    Check "重复分配幂等 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    $r = Call-Api "POST" "/api/v1/members/$memId/assign" @{ dept_id = $deptOps; role = "member" } $presToken
+    Check "分配普通成员 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    $r = Call-Api "POST" "/api/v1/members/99999/assign" @{ dept_id = $deptOps; role = "member" } $presToken
+    Check "分配不存在的成员 -> 404" (($r.status -eq 404) -and ((ErrCode $r) -eq "MEMBER_NOT_FOUND")) "status=$($r.status)"
+    $r = Call-Api "POST" "/api/v1/members/$newId/assign" @{ dept_id = $deptOps; role = "president" } $presToken
+    Check "assign 授予 president -> 400" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$newId/assign" @{ dept_id = 99999; role = "member" } $presToken
+    Check "分配到不存在的部门 -> 404" (($r.status -eq 404) -and ((ErrCode $r) -eq "DEPT_NOT_FOUND")) "status=$($r.status)"
+
+    $r = Call-Api "POST" "/api/v1/members/assign-batch" @{ member_ids = @($newId, 99999); dept_id = $deptPub; role = "member" } $presToken
+    Check "批量分配 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    Check "批量：成功 1 条" ($r.json.data.succeeded.Count -eq 1) "succeeded=$($r.json.data.succeeded | ConvertTo-Json -Compress)"
+    Check "批量：失败 1 条" ($r.json.data.failed.Count -eq 1)
+    Check "批量：失败原因是 MEMBER_NOT_FOUND" ($r.json.data.failed[0].code -eq "MEMBER_NOT_FOUND")
+    Check "批量：成功的那条真的生效了（部分成功不回滚）" ($r.json.data.succeeded[0] -eq $newId)
+
+    $r = Call-Api "DELETE" "/api/v1/depts/$deptOps" $null $presToken
+    Check "删除非空部门 -> 409 DEPT_NOT_EMPTY" (($r.status -eq 409) -and ((ErrCode $r) -eq "DEPT_NOT_EMPTY")) "status=$($r.status) code=$(ErrCode $r)"
+
+    # ---------- 10. 成员名录与编辑 ----------
+    Write-Host ""
+    Write-Host "[10] 成员名录与编辑"
+    $r = Call-Api "GET" "/api/v1/members" $null $presToken
+    Check "GET /members -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "分页字段齐全" (($null -ne $r.json.data.total) -and ($null -ne $r.json.data.page) -and ($null -ne $r.json.data.size))
+    Check "page 从 1 开始" ($r.json.data.page -eq 1)
+    Check "名录不含手机号" (-not ($r.json.data.items[0].PSObject.Properties.Name -contains "phone"))
+    $r = Call-Api "GET" "/api/v1/members?dept_id=$deptOps" $null $presToken
+    Check "按部门筛选" ($r.json.data.total -eq 2) "total=$($r.json.data.total)"
+    $r = Call-Api "GET" "/api/v1/members?status=disabled" $null $presToken
+    Check "按状态筛选（无已退出成员）" ($r.json.data.total -eq 0) "total=$($r.json.data.total)"
+    $r = Call-Api "GET" "/api/v1/members?page=1&size=1" $null $presToken
+    Check "size=1 生效" ($r.json.data.items.Count -eq 1)
+    Check "size 超上限按 200" ((Call-Api "GET" "/api/v1/members?size=9999" $null $presToken).json.data.size -eq 200)
+
+    $r = Call-Api "GET" "/api/v1/members/$memId" $null $presToken
+    Check "成员详情 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "详情含 stats.owned_tasks" ($null -ne $r.json.data.stats.owned_tasks)
+    $r = Call-Api "GET" "/api/v1/members/99999" $null $presToken
+    Check "不存在的成员 -> 404" (($r.status -eq 404) -and ((ErrCode $r) -eq "MEMBER_NOT_FOUND")) "status=$($r.status)"
+    $r = Call-Api "GET" "/api/v1/members/abc" $null $presToken
+    Check "非数字 id -> 404（不是 500）" ($r.status -eq 404) "status=$($r.status)"
+
+    $r = Call-Api "PATCH" "/api/v1/members/$memId" @{ name = "普通成员改名" } $presToken
+    Check "改姓名 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    Check "姓名已改" ($r.json.data.name -eq "普通成员改名") "got=[$($r.json.data.name)]"
+    $r = Call-Api "PATCH" "/api/v1/members/$memId" @{ role = "president" } $presToken
+    Check "PATCH 授予 president -> 400" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PATCH" "/api/v1/members/$memId" @{ role = "vip" } $presToken
+    Check "非法角色 -> 400" ($r.status -eq 400) "status=$($r.status)"
+    $r = Call-Api "PATCH" "/api/v1/members/$newId" @{ role = "member" } $presToken
+    Check "改已分配成员的部门/角色 -> 200" ($r.status -eq 200) "status=$($r.status)"
+
+    # 待分配成员不允许用 PATCH 授权（那属于 assign 的职责）
+    $r = New-Account "13900000013" "仍未分配" "stillpw12" $regCode
+    $stillId = $r.json.data.member.id
+    $r = Call-Api "PATCH" "/api/v1/members/$stillId" @{ role = "member" } $presToken
+    Check "待分配成员用 PATCH 授权 -> 400" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PATCH" "/api/v1/members/$stillId" @{ name = "仍未分配改名" } $presToken
+    Check "待分配成员改姓名 -> 200" ($r.status -eq 200) "status=$($r.status)"
+
+    # ---------- 11. 会长保护与移交 ----------
+    Write-Host ""
+    Write-Host "[11] 最后一个会长保护 + 会长移交（原子）"
+    $vpPhone = "13900000014"
+    $r = New-Account $vpPhone "副会长候选人" "vppw1234" $regCode
+    $vpId = $r.json.data.member.id
+    $r = Call-Api "POST" "/api/v1/members/$vpId/assign" @{ dept_id = 1; role = "vice_president" } $presToken
+    Check "分配副会长 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    $vpToken = Login-Token $vpPhone "vppw1234"
+    Check "副会长登录成功" ($vpToken.Length -eq 64)
+
+    $r = Call-Api "GET" "/api/v1/register-config" $null $vpToken
+    Check "副会长可查看注册口令 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    $r = Call-Api "PUT" "/api/v1/register-config/code" @{ code = "VPCODE" } $vpToken
+    Check "副会长换口令 -> 403 FORBIDDEN_ROLE" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/depts" @{ name = "副会长想建的部门" } $vpToken
+    Check "副会长新建部门 -> 403（会长独占）" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "DELETE" "/api/v1/depts/$deptPub" $null $vpToken
+    Check "副会长删除部门 -> 403（会长独占）" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PATCH" "/api/v1/depts/$deptPub" @{ sort = 99 } $vpToken
+    Check "副会长改部门 -> 403（会长独占）" ($r.status -eq 403) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$presId/transfer-presidency" @{ self_role = "member" } $vpToken
+    Check "副会长移交会长 -> 403" ($r.status -eq 403) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PATCH" "/api/v1/members/$presId" @{ role = "member" } $vpToken
+    Check "副会长改动会长本人 -> 403" ($r.status -eq 403) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "GET" "/api/v1/members/pending" $null $vpToken
+    Check "副会长可看待分配 -> 200" ($r.status -eq 200) "status=$($r.status)"
+
+    $r = Call-Api "PATCH" "/api/v1/members/$presId" @{ role = "member" } $presToken
+    Check "会长把自己降级 -> 409 FORBIDDEN_LAST_PRESIDENT" (($r.status -eq 409) -and ((ErrCode $r) -eq "FORBIDDEN_LAST_PRESIDENT")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$presId/disable" $null $presToken
+    Check "禁用最后一个会长 -> 409" (($r.status -eq 409) -and ((ErrCode $r) -eq "FORBIDDEN_LAST_PRESIDENT")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$presId/transfer-presidency" @{ self_role = "member" } $presToken
+    Check "移交给自己 -> 400" ($r.status -eq 400) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$stillId/transfer-presidency" @{ self_role = "member" } $presToken
+    Check "移交给 pending 账号 -> 403 MEMBER_PENDING" (($r.status -eq 403) -and ((ErrCode $r) -eq "MEMBER_PENDING")) "status=$($r.status) code=$(ErrCode $r)"
+
+    $r = Call-Api "POST" "/api/v1/members/$vpId/transfer-presidency" @{ self_role = "vice_president" } $presToken
+    Check "会长移交给副会长 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    Check "新会长 role=president" ($r.json.data.president.role -eq "president")
+    Check "原会长降为 vice_president" ($r.json.data.previous.role -eq "vice_president")
+    $r = Call-Api "GET" "/api/v1/auth/me" $null $vpToken
+    Check "新会长权限 view_scope=all" ($r.json.data.permissions.view_scope -eq "all")
+    Check "新会长 permissions.set_role=true" ($r.json.data.permissions.set_role -eq $true)
+    $r = Call-Api "POST" "/api/v1/members/$presId/transfer-presidency" @{ self_role = "member" } $presToken
+    Check "已不是会长者移交 -> 403" ($r.status -eq 403) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$presId/transfer-presidency" @{ self_role = "vice_president" } $vpToken
+    Check "新会长移交回原会长 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "GET" "/api/v1/auth/me" $null $presToken
+    Check "角色已复原为 president" ($r.json.data.member.role -eq "president")
+
+    # ---------- 12. 重置密码 ----------
+    Write-Host ""
+    Write-Host "[12] 重置密码（会长/副会长/本部门部长/本人）"
+    $r = Call-Api "POST" "/api/v1/members/$memId/reset-password" $null $presToken
+    Check "会长重置成员密码 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $tempPw = [string]$r.json.data.temporary_password
+    Check "返回 8 位临时密码" ($tempPw.Length -eq 8) "temp=$tempPw"
+    $tmpToken = Login-Token $memPhone $tempPw
+    Check "用临时密码可登录" ($tmpToken.Length -eq 64)
+    Check "旧密码已失效" ((Login-Token $memPhone "mempw1234").Length -eq 0)
+
+    $leadToken = Login-Token $leadPhone "leadpw123"
+    Check "部长登录成功" ($leadToken.Length -eq 64)
+    $r = Call-Api "POST" "/api/v1/members/$memId/reset-password" $null $leadToken
+    Check "部长重置本部门成员密码 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$newId/reset-password" $null $leadToken
+    Check "部长重置外部门成员密码 -> 403 FORBIDDEN_NOT_IN_DEPT" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_NOT_IN_DEPT")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$presId/reset-password" $null $leadToken
+    Check "部长重置会长密码 -> 403" ($r.status -eq 403) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/depts" @{ name = "部长想建的部门" } $leadToken
+    Check "部长新建部门 -> 403" ($r.status -eq 403) "status=$($r.status)"
+    $r = Call-Api "POST" "/api/v1/members/$stillId/assign" @{ dept_id = $deptOps; role = "member" } $leadToken
+    Check "部长审批待分配 -> 403（审批统一归会长/副会长）" ($r.status -eq 403) "status=$($r.status) code=$(ErrCode $r)"
+
+    # ---------- 13. 注册配置 ----------
+    Write-Host ""
+    Write-Host "[13] 注册口令：查看 / 更换 / 轮换"
+    $r = Call-Api "GET" "/api/v1/register-config" $null $presToken
+    Check "会长查看口令 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "口令含操作人" ($null -ne $r.json.data.updated_by)
+    $oldCode = [string]$r.json.data.code
+    $r = Call-Api "PUT" "/api/v1/register-config/code" @{ code = "NEWCODE1" } $presToken
+    Check "会长换口令 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    Check "返回新口令" ($r.json.data.code -eq "NEWCODE1")
+    $r = New-Account "13900000015" "旧口令注册" "oldcode12" $oldCode
+    Check "旧口令立即失效 -> 400" (($r.status -eq 400) -and ((ErrCode $r) -eq "REGISTER_CODE_INVALID")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = New-Account "13900000016" "新口令注册" "newcode12" "NEWCODE1"
+    Check "新口令可注册 -> 201" ($r.status -eq 201) "status=$($r.status)"
+    $regCode = "NEWCODE1"
+    $r = Call-Api "PUT" "/api/v1/register-config/code" @{ code = "ab" } $presToken
+    Check "口令过短 -> 400" ($r.status -eq 400) "status=$($r.status)"
+    $r = Call-Api "POST" "/api/v1/register-config/rotate" $null $presToken
+    Check "随机轮换 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    $regCode = [string]$r.json.data.code
+    Check "轮换后口令变化且 6 位" (($regCode.Length -eq 6) -and ($regCode -ne "NEWCODE1")) "code=$regCode"
+
+    # ---------- 14. 部门招募链接 ----------
+    Write-Host ""
+    Write-Host "[14] 招募链接（只预填部门，不赋予角色）"
+    $r = Call-Api "POST" "/api/v1/dept-invite-links" @{ dept_id = $deptPub } $presToken
+    Check "创建招募链接 -> 201" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r)"
+    $linkToken = [string]$r.json.data.token
+    Check "返回 token（8 位）" ($linkToken.Length -eq 8) "token=$linkToken"
+    Check "返回 url 含 /join/" (([string]$r.json.data.url) -like "*/join/*")
+    $r = Call-Api "POST" "/api/v1/dept-invite-links" @{ dept_id = 99999 } $presToken
+    Check "链接指向不存在的部门 -> 404" (($r.status -eq 404) -and ((ErrCode $r) -eq "DEPT_NOT_FOUND")) "status=$($r.status)"
+    $r = Call-Api "POST" "/api/v1/dept-invite-links" @{ dept_id = $deptPub } $vpToken
+    Check "副会长可管招募链接 -> 201" ($r.status -eq 201) "status=$($r.status)"
+
+    $r = Call-Api "GET" "/api/v1/dept-invite-links" $null $presToken
+    Check "链接列表 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "列表含 2 条" ($r.json.data.items.Count -eq 2) "count=$($r.json.data.items.Count)"
+    Check "列表含部门名" ($null -ne $r.json.data.items[0].dept.name)
+
+    # 通过招募链接进来的人：客户端把链接里的 dept_id 带进注册请求（只做预填）
+    $r = Call-Api "POST" "/api/v1/auth/register" @{ register_code = $regCode; phone = "13900000017"; name = "链接进来的人"; password = "linkpw123"; dept_id = $deptPub }
+    Check "经链接注册 -> 201" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r)"
+    $linkMemberId = $r.json.data.member.id
+    $r = Call-Api "GET" "/api/v1/members/pending" $null $presToken
+    $hinted = $r.json.data.items | Where-Object { $_.id -eq $linkMemberId }
+    Check "待分配项带 dept_hint（来自链接）" ($hinted.dept_hint.id -eq $deptPub) "hint=$($hinted.dept_hint | ConvertTo-Json -Compress)"
+    $r = Call-Api "POST" "/api/v1/members/$linkMemberId/assign" @{ dept_id = $hinted.dept_hint.id; role = "member" } $presToken
+    Check "按链接预填直接分配 -> 200" ($r.status -eq 200) "status=$($r.status)"
+
+    $r = Call-Api "DELETE" "/api/v1/dept-invite-links/$linkToken" $null $presToken
+    Check "停用链接 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    Check "停用后 enabled=false" ($r.json.data.enabled -eq $false)
+    $r = Call-Api "DELETE" "/api/v1/dept-invite-links/$linkToken" $null $presToken
+    Check "重复停用幂等 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    $r = Call-Api "DELETE" "/api/v1/dept-invite-links/nonexistent" $null $presToken
+    Check "停用不存在的链接 -> 200（幂等）" ($r.status -eq 200) "status=$($r.status)"
+
+    # ---------- 15. 优雅关闭（仅本机） ----------
+    Write-Host ""
+    Write-Host "[15] /admin/shutdown 仅本机可访问"
     $r = Call-Api "POST" "/admin/shutdown"
     Check "本机关停 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
     $proc.WaitForExit(8000) | Out-Null
@@ -293,9 +560,9 @@ try {
     Check "日志出现『服务已停止』" ($logText -match "服务已停止") "log=[$logText]"
     Check "日志无 ERROR/FATAL" (($logText -notmatch "\[FATAL\]") -and ($logText -notmatch "FSException")) ""
 
-    # ---------- 9. 重启后数据仍在 ----------
+    # ---------- 16. 重启后数据仍在 ----------
     Write-Host ""
-    Write-Host "[9] 重启后持久性"
+    Write-Host "[16] 重启后持久性"
     $proc = Start-Server $dataRel "2"
     Check "重启后服务就绪" ($null -ne $proc)
     $r = Call-Api "POST" "/api/v1/auth/login" @{ phone = "13800000000"; password = "newpassword1" }

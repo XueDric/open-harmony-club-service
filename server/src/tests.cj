@@ -458,6 +458,199 @@ func testViews(t: TR): Unit {
     t.eqs("角色中文名", roleLabel("vice_president"), "副会长")
 }
 
+/* ===================== Part 3 的视图与查询 ===================== */
+
+func testPart3Views(t: TR): Unit {
+    println("- views(Part3) 部门/成员/待分配/链接")
+    let s = Store("build/test-data-p3")
+    let d1 = Department()
+    d1.id = 1
+    d1.name = "主席团"
+    d1.sort = 0
+    let d2 = Department()
+    d2.id = 2
+    d2.name = "运营部"
+    d2.sort = 2
+    s.departments[1] = d1
+    s.departments[2] = d2
+
+    let pres = Member()
+    pres.id = 1
+    pres.name = "会长"
+    pres.phone = "13800000000"
+    pres.role = "president"
+    pres.dept_id = 1
+    pres.status = "active"
+    pres.joined_at = 1767196800
+    s.members[1] = pres
+
+    let lead = Member()
+    lead.id = 2
+    lead.name = "部长"
+    lead.phone = "13800000002"
+    lead.role = "lead"
+    lead.dept_id = 2
+    lead.status = "active"
+    lead.joined_at = 1767196800
+    s.members[2] = lead
+
+    let member = Member()
+    member.id = 3
+    member.name = "成员"
+    member.phone = "13800000003"
+    member.role = "member"
+    member.dept_id = 2
+    member.status = "active"
+    member.joined_at = 1767196800
+    s.members[3] = member
+
+    let gone = Member()
+    gone.id = 4
+    gone.name = "已退出"
+    gone.phone = "13800000004"
+    gone.role = "member"
+    gone.dept_id = 2
+    gone.status = "disabled"
+    gone.joined_at = 1767196800
+    s.members[4] = gone
+
+    let pend = Member()
+    pend.id = 5
+    pend.name = "新人"
+    pend.phone = "13800000005"
+    pend.status = "pending"
+    pend.dept_hint = 2
+    pend.joined_at = 1789898400
+    s.members[5] = pend
+
+    /* 部门视图：部长现查现算（没有 lead_id 字段） */
+    let dv = deptView(s, d2).toString()
+    t.ok("部门含部长姓名", containsAscii(dv, "部长"))
+    t.ok("部门人数=2（active，不含已退出）", containsAscii(dv, "\"member_count\":2"))
+    t.ok("部门不含手机号", !containsAscii(dv, "13800000002"))
+
+    let dv1 = deptView(s, d1).toString()
+    t.ok("主席团无部长时 lead 为 null", containsAscii(dv1, "\"lead\":null"))
+
+    /* 部门顺序：sort 0 在 2 前面 */
+    let ds = sortedDepartments(s)
+    t.eqi("部门数", ds.size, 2)
+    t.eqs("按 sort 排序", ds[0].name, "主席团")
+
+    /* 成员排序：部门 sort → id（未分配部门排最后） */
+    let picked = ArrayList<Member>()
+    picked.add(s.members[3])
+    picked.add(s.members[5])
+    picked.add(s.members[1])
+    let sorted = sortedMembers(s, picked)
+    t.eqs("成员排序：主席团(sort0) 最前", sorted[0].name, "会长")
+    t.eqs("成员排序：未分配部门最后", sorted[sorted.size - 1].name, "新人")
+
+    /* 成员详情：计数摘要 */
+    let task = Task()
+    task.id = 1
+    task.title = "T1"
+    task.owner_id = 2
+    task.status = "doing"
+    task.dept_id = 2
+    s.tasks[1] = task
+    let task2 = Task()
+    task2.id = 2
+    task2.title = "T2"
+    task2.owner_id = 2
+    task2.status = "done"
+    task2.dept_id = 2
+    s.tasks[2] = task2
+    let task3 = Task()
+    task3.id = 3
+    task3.title = "T3(已删)"
+    task3.owner_id = 2
+    task3.status = "doing"
+    task3.deleted_at = 1789898400
+    s.tasks[3] = task3
+    let plan = Plan()
+    plan.id = 1
+    plan.title = "P1"
+    plan.owner_id = 2
+    plan.dept_id = 2
+    s.plans[1] = plan
+
+    let detail = memberDetailView(s, s.members[2]).toString()
+    t.ok("owned_tasks=2（软删除不计）", containsAscii(detail, "\"owned_tasks\":2"))
+    t.ok("open_tasks=1", containsAscii(detail, "\"open_tasks\":1"))
+    t.ok("owned_plans=1", containsAscii(detail, "\"owned_plans\":1"))
+    t.ok("详情不含手机号", !containsAscii(detail, "13800000002"))
+
+    /* 未完成任务：只算 owner 匹配且未完成且未删除 */
+    let open = openTasksOf(s, 2)
+    t.eqi("未完成任务数", open.size, 1)
+    t.eqs("未完成任务标题", open[0].title, "T1")
+
+    /* 待分配视图 */
+    let pv = pendingView(s, s.members[5]).toString()
+    t.ok("待分配含 dept_hint 部门名", containsAscii(pv, "运营部"))
+    t.ok("待分配含 registered_at", containsAscii(pv, "registered_at"))
+    t.ok("待分配 role 为 null", containsAscii(pv, "\"role\":null"))
+
+    /* 待分配列表顺序 = 注册顺序（id 升序） */
+    let pending = pendingMembers(s)
+    t.eqi("待分配人数", pending.size, 1)
+
+    /* 部门前置检查 */
+    t.eqi("运营部未退出成员数（部长+成员，不含已退出）", activeMemberCountOfDept(s, 2), 2)
+    t.ok("部门重名检测", deptNameTaken(s, "运营部", 0))
+    t.ok("改名时排除自身", !deptNameTaken(s, "运营部", 2))
+
+    /* 招募链接视图 */
+    let l = DeptInviteLink()
+    l.token = "a1b2c3d4"
+    l.dept_id = 2
+    l.enabled = true
+    l.created_by = 1
+    l.created_at = 1789898400
+    let lv = inviteLinkView(s, l, "https://example.com/join/a1b2c3d4").toString()
+    t.ok("链接含 token", containsAscii(lv, "a1b2c3d4"))
+    t.ok("链接含部门名", containsAscii(lv, "运营部"))
+    t.ok("链接含 url", containsAscii(lv, "https://example.com/join/a1b2c3d4"))
+
+    /* 注册配置视图 */
+    s.register_code = "K3M9P2"
+    s.register_code_by = 1
+    s.register_code_at = 1789898400
+    let rv = registerConfigView(s).toString()
+    t.ok("注册配置含口令", containsAscii(rv, "K3M9P2"))
+    t.ok("注册配置含操作人", containsAscii(rv, "会长"))
+}
+
+func testPaging(t: TR): Unit {
+    println("- paging 分页")
+    let all = ArrayList<JsonObject>()
+    var i: Int64 = 1
+    while (i <= 120) {
+        let o = JsonObject()
+        jPutInt(o, "id", i)
+        all.add(o)
+        i += 1
+    }
+    let p1 = pagedSlice(all, 1, 50).toString()
+    t.ok("第 1 页 total=120", containsAscii(p1, "\"total\":120"))
+    t.ok("第 1 页 page=1", containsAscii(p1, "\"page\":1"))
+    t.ok("第 1 页 size=50", containsAscii(p1, "\"size\":50"))
+
+    let p3 = pagedSlice(all, 3, 50)
+    t.eqi("第 3 页条目数=20", (jsonGetArray(p3, "items") ?? JsonArray()).size(), 20)
+
+    let pOver = pagedSlice(all, 99, 50)
+    t.eqi("越界页返回空", (jsonGetArray(pOver, "items") ?? JsonArray()).size(), 0)
+
+    let pMax = pagedSlice(all, 1, 5000)
+    t.ok("size 上限 200", containsAscii(pMax.toString(), "\"size\":200"))
+
+    let pZero = pagedSlice(all, 0, 0)
+    t.ok("page<1 归 1", containsAscii(pZero.toString(), "\"page\":1"))
+    t.ok("size<1 归 50", containsAscii(pZero.toString(), "\"size\":50"))
+}
+
 /* ===================== 入口 ===================== */
 
 public func runTests(): Int64 {
@@ -470,6 +663,8 @@ public func runTests(): Int64 {
     testStore(t)
     testPerms(t)
     testViews(t)
+    testPart3Views(t)
+    testPaging(t)
     println("")
     println("PASS ${t.pass} / FAIL ${t.fail}")
     if (t.fail == 0) {

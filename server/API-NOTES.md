@@ -145,6 +145,9 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 | 13 | 非 2xx 响应读不到 body | `Invoke-WebRequest` 已把流读走，`GetResponseStream()` 拿到空串。用 `$_.ErrorDetails.Message` |
 | 14 | `Start-Process -PassThru` 拿不到 `ExitCode` | 用"进程自行退出 + 日志收尾行"作为优雅关闭的证据 |
 | 15 | `$args` 是自动变量 | 函数里不要用 `$args` 做局部变量名 |
+| 16 | **`-Body` 传字符串会按 ANSI 发送** | 中文请求体到达服务端就是乱码（表现为"改名字成功了但名字没变"）。必须 `[System.Text.Encoding]::UTF8.GetBytes($json)` + `Content-Type: application/json; charset=utf-8` |
+| 17 | 响应里的中文比较 | 配合上一条：请求体乱码时，返回的中文自然也对不上，容易被误判成服务端 bug |
+| 18 | `ConvertFrom-Json` 单元素数组会退化成对象 | 断言 `.Count` 在 PS 5.1 下对单对象返回 1，可用但要心里有数 |
 
 ---
 

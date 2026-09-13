@@ -46,12 +46,12 @@ cd build
 | 里程碑 | 内容 | 状态 |
 | --- | --- | --- |
 | **M1 骨架** | 构建链路 · Store 与原子落盘 · 统一响应/错误码 · 时间与时区 · `can()` 权限函数 · 认证 5 接口 · `/health` · 单测 + 冒烟测试 | ✅ **已完成** |
-| M2 | Part 3 组织与成员（19 个接口） | 待排 |
+| **M2 组织与成员** | Part 3 的 **19 个接口**：部门增删改（会长独占）· 成员名录/详情/编辑 · 移出社团 · 待分配与**批量分配** · **会长移交（原子）** · 重置密码 · 注册口令 · 招募链接 | ✅ **已完成** |
 | M3 | Part 4 任务（8 个接口） | 待排 |
 | M4 | Part 5 课题（6 个接口） | 待排 |
 | M5 | 打包部署 · 自签证书（带 SAN）· TLS 关卡 | 待排 |
 
-M1 只做了 Part 2 的认证闭环，是"第 0 步先把链路打通"的落地。
+**接口进度：24 / 39**（认证 5 + 组织与成员 19）。
 
 ---
 
@@ -61,17 +61,23 @@ M1 只做了 Part 2 的认证闭环，是"第 0 步先把链路打通"的落地�
 server/
   build.ps1               构建脚本（cjc + stdx + 轻舟同包编译）
   src/
-    main.cj               入口：serve / init-admin / test
-    store.cj              6 张表的数据模型 + 内存 Store + 原子落盘
+    main.cj               入口：serve / init-admin / test + 全部路由注册
+    store.cj              6 张表的数据模型 + 内存 Store + 原子落盘 + 查询/排序辅助
     errors.cj             错误码表（api-design §1.3 的代码化）
     jsonw.cj              响应包装 {ok,data}/{ok,error} + 取参 + 字段校验器
-    views.cj              对外 JSON 视图（MemberBrief 等，含隐私最小化）
+    views.cj              对外 JSON 视图（MemberBrief、部门、待分配、链接、注册配置）
     perms.cj              ★ can(member, action, target) —— 全项目唯一权限判定点
     auth.cj               口令哈希（PBKDF2-HMAC-SHA256）、令牌、认证辅助
     timex.cj              时间与时区（ISO8601 +08:00、逾期判定、历法换算）
     ids.cj                ID / 令牌 / 易读口令
     strx.cj               字节级字符串工具
-    h_auth.cj             Part 2 认证接口
+    paging.cj             分页与 query 取参（page/size，pathId）
+    audit.cj              敏感操作审计日志（重置密码、换口令、删除部门…）
+    h_auth.cj             Part 2 认证（5）
+    h_dept.cj             Part 3.1 部门（4）
+    h_member.cj           Part 3.2–3.4 名录/授权/会长移交（8）
+    h_secret.cj           Part 3.5–3.6 重置密码与注册配置（4）
+    h_link.cj             Part 3.7 招募链接（3）
     h_ops.cj              健康检查、本机判定
     tests.cj              单测（main.exe test）
   tests/smoke.ps1         冒烟测试（打真实 HTTP）
@@ -83,10 +89,10 @@ server/
 ## 测试
 
 ```powershell
-# 单测：时间/历法、口令哈希、权限矩阵、落盘往返（127 项）
+# 单测：时间/历法、口令哈希、权限矩阵、落盘往返、视图与分页（164 项）
 .\build\club-server.exe test
 
-# 冒烟测试：真实 HTTP、状态码、错误码、令牌流转、重启持久性（58 项）
+# 冒烟测试：真实 HTTP、状态码、错误码、令牌流转、权限边界、重启持久性（165 项）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1
 ```
 

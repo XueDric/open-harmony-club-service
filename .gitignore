@@ -29,3 +29,6 @@
 # cjenv 是另一个项目（自成 git 仓库，origin = gitcode.com/xuguowei/cjenv.git）。
 # 若在根仓库里 add 它，git 只会记一个 gitlink，clone 下来是个空壳。
 /cjenv/
+
+# 临时提交信息文件（PS 5.1 不支持 heredoc，只能落文件后 -F）
+.commitmsg*.tmp
