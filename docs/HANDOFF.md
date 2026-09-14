@@ -67,7 +67,7 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | --- | --- | --- |
 | `v1-scope.md` | **范围基准** v0.10：11 页面、6 张表、19 条业务规则、权限矩阵 | 想知道"这个要不要做" |
 | `api-design.md` | **完整接口设计** Part 1–6，39 个接口逐条定义 | **写服务端时全程对照** |
-| `frontend-brief.md` | **前端对接精简版**：页面清单、通用约定、错误码、4 件必知事项 | **客户端同事先看这个** |
+| `frontend-brief.md` | **前端对接精简版**：页面清单、通用约定、错误码、**5 件必知事项** | **客户端同事先看这个** |
 | `deploy-windows-verify.md` | 部署与验证、目标配置基线 | 部署时看 |
 | **`code-review.md`** | **代码评审报告（三轮）**：24 + 9 + 4 条，全部已修，附回退实测证据 | 想知道"哪些坑已经踩过、为什么这样写" |
 | `README.md` | 仓库唯一入口：进度、目录结构、六条最容易踩的坑 | 第一次打开这个仓库时 |
@@ -319,8 +319,8 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | --- | --- | --- |
 | 1 | **服务器步骤 0 未跑** | 卡 M5：需确认架构是否 x64、公网 IP、端口、防火墙+安全组 |
 | 2 | 轻舟 DEF-1 上游未修 | 本地补丁顶着；补丁已记录在 `server/build.ps1` 与 `API-NOTES.md` |
-| 3 | 工作区原先**不是 git 仓库** | 2026-09-13 已建 GitHub 仓库 `XueDric/open-harmony-club-service` 并上传；提交作者为 `XueDric <318242380+XueDric@users.noreply.github.com>` |
-| 3b | **本机直连 github.com 不通** | 实验室网络需走本地代理（`127.0.0.1:7897`）。推送用：<br>`git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main`<br>（`git ls-remote` 直连会 20s 超时，别误判成权限问题） |
+| 3 | 工作区原先**不是 git 仓库** | 2026-09-13 已建 GitHub 仓库 `XueDric/open-harmony-club-service` 并上传；提交作者为 `XueDric <318242380+XueDric@users.noreply.github.com>`。**2026-09-14 已把三轮评审修复 + 仓库整理全部推送**，远端 `main` 与本地 HEAD 一致 |
+| 3b | **推送 github 的网络** | 2026-09-14 实测**直连可用**（`git push origin main` 直接成功，此前记录的"直连不通"已不适用）。若哪天直连超时（约 20s），改走本地代理：<br>`git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main`<br>（直连超时**别误判成权限问题**） |
 | 4 | 忘记密码：v1 由会长重置 | 已定 |
 | 5 | 服务器可用期限、备份交接人 | 需向老师确认 |
 
@@ -332,7 +332,7 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 
 1. **开工前先替换模板值**：`AppScope/app.json5` 的 `bundleName`、应用名与图标、首页占位文案。
    发布前若忘掉，装到手机上会显示 DevEco 的示例名（README「未决事项」#7 有记录）。
-2. **接口与错误码**：精简版看 `frontend-brief.md`（页面清单 / 通用约定 / 错误码 / 4 件必知事项），
+2. **接口与错误码**：精简版看 `frontend-brief.md`（页面清单 / 通用约定 / 错误码 / **5 件必知事项**），
    完整定义看 `api-design.md`。**接口已冻结，要改先提出来。**
 3. **页面 11 个，首页必须是「我的任务」**，不是组织架构图。
 4. **两项客户端自己的工作要单独排期**：日历同步机制（本地映射 + `POST /tasks/lookup` 比对）、
