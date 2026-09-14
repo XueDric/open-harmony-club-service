@@ -1,6 +1,6 @@
 {
   "modelVersion": "6.1.1",
-  "description": "Please describe the basic information.",
+  "description": "社团管理工具 · 鸿蒙客户端（ArkTS）",
   "dependencies": {
   },
   "devDependencies": {

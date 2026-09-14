@@ -6,7 +6,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 客户端 | 鸿蒙 App（仓颉）—— 见 `entry/`、`AppScope/`。**注意：本仓库里的客户端目前仍只是 DevEco 初始模板**（见下方「未完成」） |
+| 客户端 | 鸿蒙 App（**ArkTS**）—— 见 `entry/`、`AppScope/`，页面在 `entry/src/main/ets/pages/`。**本机已实测可编译打包**（见 `docs/client-build.md`）；尚未接接口 |
 | 服务端 | 仓颉 **1.1.3** + [轻舟 QingZhou](https://gitcode.com/BIT-FSSLab/QingZhou) 框架，Windows 部署 |
 | 持久化 | 文件存储（内存 Store + 写时原子落盘 JSON），不用数据库 |
 | 传输 | **框架原生 TLS**（不用 Nginx），自签证书必须带 SAN |
@@ -26,7 +26,7 @@
 | **服务端代码评审修复（第一轮）** | 按 `docs/code-review.md` 修完 3 个 P0 权限漏洞 + 8 个 P1 + 13 个 P2，并补上会真正失败的回归测试 | ✅ 完成并验证 |
 | **服务端代码评审（第二轮）** | `docs/code-review.md` 的 9 条新发现：文档类 N-2 / N-3 / N-4 · **N-1**（落地页 HTML 转义）+ **N-9**（CSP）· **N-7**（不可作用于同权/更高权的人，已从"重置密码"推广到改角色 / 禁用 / 改名）· **N-5**（`idem` 补校验）· **N-6**（注册节流改**按客户端 IP + 递增退避**，因此无需新增接口）—— **全部处理完毕**（N-8 按约定不改），每条都补了会因回退而变红的断言 | ✅ 完成并验证 |
 | **服务端代码评审（第三轮）** | `docs/code-review.md` 第三轮复验：第二轮 9 条**全部确认修复**；新发现 4 条（**N-10** `assign`/`assign-batch` 漏在同权保护之外 · N-11 文档限定词 · N-12 裸 IPv6 退化 · N-13 分布式尝试）—— **已全部处理**。N-10 的两个面（降级同权者、用 `assign` 推翻会长对同权者的移出决定）都已堵住 | ✅ 完成并验证 |
-| 客户端 | 由小组其他成员推进；**本仓库内仍是 DevEco 初始模板**（`entry/` 未接任何接口） | 进行中 |
+| **客户端（ArkTS）** | 技术栈定为 **ArkTS**（2026-09-14）；已接入组内上传的成员模块 **3 页**（成员名录 / 待分配审批 / 管理），`hvigorw assembleHap` 实测 **BUILD SUCCESSFUL**（未签名）。**页面仍是假数据，未接任何接口** | 🟡 可构建；待签名 + 待接接口 |
 
 **接口进度 39 / 39**（认证 5 · 组织与成员 19 · 任务 8 · 课题 6 = 38 个业务接口，另加运维 `/health` 1 个）。
 > 口径说明：早期写「38 / 39」是把 `docs/api-design.md` §6.1「接口总清单（39 个）」里的 `/health` 漏算了。
@@ -56,7 +56,10 @@ server/                      服务端（仓颉）
   build/                     构建输出（每次编译重建，不入库）
   dist/                      部署包（含私钥，不入库）
   certs/                     自签证书与私钥（不入库）
-entry/  AppScope/  hvigor/   鸿蒙客户端工程（DevEco 要求这些在根目录）
+entry/  AppScope/  hvigor/   鸿蒙客户端工程（ArkTS；DevEco 要求这些在根目录）
+  entry/src/main/ets/pages/           页面：Index / MemberList / MemberDetail / PendingApproval / Manage
+  entry/src/main/ets/entryability/    EntryAbility.ets（UIAbility，loadContent('pages/Index')）
+  entry/src/main/resources/base/profile/main_pages.json   页面路由登记（ArkTS 必需）
 docs/                        见下方「文档索引」
 ```
 
@@ -107,6 +110,7 @@ cd build
 | **`docs/code-review.md`** | **代码评审报告（三轮）**：第一轮 24 条（3 P0 + 8 P1 + 13 P2）、第二轮 9 条、第三轮 4 条 —— **全部修复并独立复验**，附回退实测证据 | 想了解"哪些坑已经踩过" |
 | `docs/v1-scope.md` | 范围基准：11 页面、6 张表、19 条业务规则、权限矩阵 | 想知道"这个要不要做" |
 | `docs/frontend-brief.md` | 前端对接精简版 | 客户端同事看 |
+| **`docs/client-build.md`** | **客户端构建与现状**：构建命令、两个环境坑（JBR / SDK 路径）、ArkTS 迁移记录、剩余 TODO | **动客户端前先看这个** |
 | `docs/deploy-windows-verify.md` | 部署与验证步骤、目标配置基线 | 部署时看 |
 | *（对外材料已移出仓库）* | 仓颉运行时缺陷报告 + Issue 稿件 + 最小复现（`repro.cj`）、轻舟 TLS 需求与实测 —— 都在仓库上层 `cangjie-upstream\`（完整路径 `E:\harmonyOS\cangjie-upstream\`） | 追溯上游问题来源时 |
 
@@ -122,6 +126,7 @@ cd build
 | OpenSSL 3 | `E:\cangjie\qingzhou\deps\openssl\` 下两个 DLL |
 | 仓颉运行时 | `D:\Cangjie\runtime\lib\windows_x86_64_cjnative` |
 | openssl CLI | `D:\Program Files\Git\usr\bin\openssl.exe`（生成证书、TLS 验证用） |
+| **DevEco Studio** | **6.1.1.300**（`D:\DevEco Studio`）—— 自带 SDK **API 24 / 6.1.1.125**、hvigor 6.24.4、JBR **21**。构建客户端见 `docs/client-build.md` |
 
 ### 六条最容易踩的坑
 
@@ -132,7 +137,7 @@ cd build
 5. **证书必须带 SAN**：现代客户端完全忽略 CN，只看 `subjectAltName`。按真实公网 IP 重签后再部署。
 6. **私钥绝不入库**：`server/certs` 与 `server/dist` 都已在 `.gitignore`；用 `git check-ignore -v <路径>` 自检。
 
-> 完整的 26 条踩坑记录（含 PowerShell 5.1 的六个坑、cjenv 切换 SDK 打断构建等）见 **`docs/API-NOTES.md` 第 3 节**。
+> 完整的 28 条踩坑记录（含 PowerShell 5.1 的六个坑、cjenv 切换 SDK 打断构建等）见 **`docs/API-NOTES.md` 第 3 节**。
 
 ---
 
@@ -146,7 +151,7 @@ cd build
 | 4 | 忘记密码：v1 由会长重置，不做自助找回 | 已定 |
 | 5 | 服务器可用期限、备份交接人（至少两人） | 需向老师确认 |
 | 6 | 鸿蒙侧载分发（AGC 内部测试轨道、签名证书） | 流程耗时可能超过开发本身，**建议尽早启动** |
-| 7 | **客户端仍是 DevEco 初始模板**：`entry/` 未接任何接口，`bundleName` 与首页占位文案还是模板值 | 客户端同学开工前要先替换；发布前必须确认已改 |
+| 7 | **客户端三项待办**：① **签名未配**（产出 `entry-default-unsigned.hap`，装不上设备）② 只做了 **3 / 11** 页，缺**首页「我的任务」** ③ 页面全是假数据、**未接任何接口**。另：如需换 `bundleName`（现为 `com.club.manager`）趁现在改 | 见 `docs/client-build.md` §3 |
 
 ---
 
