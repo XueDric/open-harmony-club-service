@@ -330,44 +330,103 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 
 ### 11.5 客户端交接要点（**客户端同事从这里开始**）
 
-**现状：`entry/` 仍是 DevEco 初始模板，未接任何接口。** 服务端已全部就绪（39 / 39），可直接对接。
+> **技术栈已定：ArkTS**（2026-09-14；此前的仓颉方案已退役）。
+> **现状：已接入组内上传的成员模块 3 页，本机实测能编译打包；但未接任何接口、未配签名、未上真机。**
+> 构建命令、两个环境坑、完整 TODO → 见 **`client-build.md`**（动客户端前先看那个）。
 
-1. **开工前先替换模板值**：`AppScope/app.json5` 的 `bundleName`、应用名与图标、首页占位文案。
-   发布前若忘掉，装到手机上会显示 DevEco 的示例名（README「未决事项」#7 有记录）。
-2. **接口与错误码**：精简版看 `frontend-brief.md`（页面清单 / 通用约定 / 错误码 / **5 件必知事项**），
-   完整定义看 `api-design.md`。**接口已冻结，要改先提出来。**
-3. **页面 11 个，首页必须是「我的任务」**，不是组织架构图。
-4. **两项客户端自己的工作要单独排期**：日历同步机制（本地映射 + `POST /tasks/lookup` 比对）、
-   自签证书信任配置（证书**必须带 SAN**，写 `IP:<公网IP>`）。
-5. **本机联调起服务**：
+#### A. 先让它跑起来
 
-   ```powershell
-   cd server
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1      # 编译（并拷 4 个依赖 DLL）
-   cd build
-   .\club-server.exe init-admin 13800000000 你的密码123 dev-data       # 预置首任会长 + 4 个组织
-   .\club-server.exe serve 8080 dev-data                               # HTTP
-   # HTTPS： .\club-server.exe serve-tls 8443 dev-data ..\certs\cert.pem ..\certs\key.pem
-   ```
+```powershell
+$ds = "D:\DevEco Studio"
+$env:DEVECO_SDK_HOME = "$ds\sdk"      # DevEco 自带 SDK（API 24 / 6.1.1.125）
+$env:JAVA_HOME       = "$ds\jbr"      # ⚠ 必须用它的 JBR 21；本机 PATH 上是 JDK 1.7，会报 UnsupportedClassVersionError
+$env:PATH = "$ds\jbr\bin;$ds\tools\node;$ds\tools\ohpm\bin;$env:PATH"
+Set-Location E:\harmonyOS\cangjie_web
+& "$ds\tools\hvigor\bin\hvigorw.bat" assembleHap --no-daemon
+```
 
-   ⚠️ **`cwd` 必须是 exe 所在目录**（数据目录与证书按相对路径读）；冒烟脚本用独立数据目录
-   `build\smoke-data`，不会碰你的联调数据。
-6. **要能处理这几类"看起来像 bug 的 403 / 429"**（都属于服务端设计，不是缺陷）：
-   - **同权保护**：副会长试图降级 / 禁用 / 重置另一位副会长 → `403 FORBIDDEN_ROLE`（见 §4.3）；
-   - **最后一个会长**：`403/409 FORBIDDEN_LAST_PRESIDENT`；
-   - **注册被节流**：`429 TOO_MANY_ATTEMPTS` —— 节流**按客户端 IP**（2026-09-14 起），
-     只影响注册、不影响登录与其它接口；
-   - **`pending` 账号**：能登录但 `permissions` 全 false、`view_scope = none`，
-     客户端应跳「等待管理员分配」页，**不进主界面**。
+产物：`entry/build/default/outputs/default/entry-default-**unsigned**.hap`。
+用 DevEco 打开项目直接 Build 也可以（IDE 会自己用对 JBR）；**但定稿前命令行也要能过**，
+否则 CI / 别人机器上会重现同一个 Java 版本坑。
+
+#### B. 客户端当前进度（别高估）
+
+| 项 | 状态 | 说明 |
+| --- | --- | --- |
+| 页面 | **3 / 11** | 成员名录 · 待分配审批 · 管理；**缺首页「我的任务」** |
+| 接口 | **0 / 39** | 页面全是假数据，**没有任何网络层**（grep `http\|api/v1\|token` → 0 命中） |
+| 构建 | ✅ 通过 | `hvigorw assembleHap` → BUILD SUCCESSFUL（清空 `build` 干净重建同样通过） |
+| 签名 | ❌ 未配 | 产物是 unsigned，**装不上设备** |
+| 真机 | 未验证 | `hdc list targets` 为空；模拟器镜像有 6.1.1 / 7.0.0 |
+
+#### C. 交接清单（按优先级）
+
+1. **配置签名**（唯一挡住"装到手机"的一步）：DevEco → `File > Project Structure > Signing Configs`
+   勾 **Automatically generate signature**（需登录华为账号）。之后 `assembleHap` 产出已签名 HAP。
+2. **确认首页方向** ⚠️：`frontend-brief.md` §1 明确写「**首页必须是「我的任务」**，不是组织架构图」，
+   而现在 `Index.ets` 的三个 Tab 全是成员 / 管理方向。这是**产品方向问题，不是代码问题**，先跟组内对齐。
+3. **补 8 个缺失页面**：登录、注册、**我的任务（首页）**、任务列表、任务详情、课题列表、课题详情、
+   加入流程、我的设置（共 11 页，现有 3 页）。
+4. **接接口**：先读 `frontend-brief.md`（精简版）+ `api-design.md`（唯一权威）。接之前先处理
+   **`client-build.md` §3.4 的 8 处契约差异** —— 最容易踩的三个：
+   ① 部门 id 服务端从 **1** 开始（页面里是 0 起，而 `dept_id = 0` 含义是**未分配**）；
+   ② 角色下拉**不能有 `president`**（`assign` / `PATCH /members` 一律拒绝，会长只能走移交）；
+   ③ 成员详情**拿不到手机号**（`MemberBrief` 不含手机号，只有 `GET /auth/me` 的本人视图有）。
+5. **两类"有界面没逻辑"的地方要补**（`client-build.md` §3.5）：6 个 `@State` 只写不读 →
+   重置密码 / 移出社团 / 新建部门 / 随机轮换 / 移交会长 等按钮**点了没反应**；
+   成员详情的 `memberId` 只被赋值而未取数（点谁都显示同一个人）。
+6. **`pending` 账号要跳「等待管理员分配」页**，不进主界面（见下面 E 段第 4 条）。
+
+#### D. 两项需**单独排期**的客户端工作（brief §6.③ 与 §6.④）
+
+- **日历同步机制**：服务端**不存**日历字段，全部在客户端本地完成 —— 本地维护
+  `task_id → {event_id, cached_due_at, cached_status}`，拉任务时比对（`due_at` 变→更新、
+  `status=done`→删除、不在服务端返回中→删除、权限被拒→降级为 `.ics` 导出），
+  用 `POST /tasks/lookup` 的 `missing` 批量回收。**不做更新/删除，日历会堆错误提醒。**
+- **自签证书信任**：鸿蒙默认不信任自签证书，要在 `resources/base/profile/` 配网络安全配置并内置 CA。
+  ⚠️ 证书**必须带 SAN**（服务是 IP 访问，SAN 写 `IP:<公网IP>`）；轻舟示例自带证书**没有 SAN，不能用**。
+
+#### E. 接口与错误码
+
+精简版看 `frontend-brief.md`（页面清单 / 通用约定 / 错误码 / **5 件必知事项**），
+完整定义看 `api-design.md`。**接口已冻结（39 / 39），要改先提出来。**
+
+**要能处理这几类"看起来像 bug 的 403 / 429"**（都属于服务端设计，不是缺陷）：
+
+- **同权保护**：副会长试图降级 / 禁用 / 重置 / 改名另一位副会长 → `403 FORBIDDEN_ROLE`（见 §4.3）；
+  该规则覆盖五类动作：重置密码 / 调部门改角色 / 移出社团 / 编辑姓名 / **审批分配（`assign`、`assign-batch`）**；
+- **最后一个会长**：`403/409 FORBIDDEN_LAST_PRESIDENT`；
+- **注册被节流**：`429 TOO_MANY_ATTEMPTS` —— 节流**按客户端 IP**（2026-09-14 起），
+  只影响注册、不影响登录与其它接口；
+- **`pending` 账号**：能登录但 `permissions` 全 false、`view_scope = none`，
+  客户端应跳「等待管理员分配」页，**不进主界面**。
+
+#### F. 本机联调起服务
+
+```powershell
+cd server
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1      # 编译（并拷 4 个依赖 DLL）
+cd build
+.\club-server.exe init-admin 13800000000 你的密码123 dev-data       # 预置首任会长 + 4 个组织
+.\club-server.exe serve 8080 dev-data                               # HTTP
+# HTTPS： .\club-server.exe serve-tls 8443 dev-data ..\certs\cert.pem ..\certs\key.pem
+```
+
+⚠️ **`cwd` 必须是 exe 所在目录**（数据目录与证书按相对路径读）；冒烟脚本用独立数据目录
+`build\smoke-data`，不会碰你的联调数据。
+
+> **注意**：客户端用 HTTPS 连自签服务时要先做 D 段第二条（内置 CA）；联调阶段可先用
+> `serve 8080` 走 HTTP —— 但 HarmonyOS 对**明文 HTTP 也有限制**，需实测确认默认行为。
 
 ---
 
-### 11.6 仓库结构（2026-09-14 整理后）
+### 11.6 仓库结构（2026-09-14 · ArkTS 迁移后）
 
 | 变动 | 说明 |
 | --- | --- |
+| **客户端换栈**（2026-09-14） | `entry/` 由**仓颉**改为 **ArkTS**：页面在 `entry/src/main/ets/pages/`、入口 `entry/src/main/ets/entryability/EntryAbility.ets`。原仓颉脚手架（`src/main/cangjie/`、`cjpm.toml/.lock`、`src/test/`、`src/ohosTest/`）已删除；构建方式见 `client-build.md` |
 | **对外材料移出仓库** | 仓颉运行时缺陷报告 + Issue 稿件 + 最小复现 `repro.cj`、轻舟 TLS 需求与实测 → 上层 `E:\harmonyOS\cangjie-upstream\`（5 个文件）。仓库内 17 处引用已改写为指向那里 |
-| **删除** | `entry/src/test`、`entry/src/ohosTest` 的 DevEco 模板示例（8 个文件）；已核对 `build-profile.json5` 不引用这两个目录，不影响主构建 |
-| **入库文件** | **63 个**（整理前 76）：`server` 25 · `entry` 17 · `docs` 8 · `AppScope` 5 · 根配置 8 |
-| **`server/build/` 已清空** | 构建产物、冒烟/TLS 测试数据、日志都删了（释放 38.22 MB）。**下次跑测试前先执行 `build.ps1`** |
-| **保留** | `server/dist/`（完整部署包，可直接部署）· `server/certs/`（证书 + 私钥）· `oh_modules/`（鸿蒙依赖，重装需联网）· `.idea/`、`local.properties` |
+| **删除** | 早先删掉了 `entry/src/test`、`entry/src/ohosTest` 的 DevEco 模板示例（8 个文件）；本次迁移又删掉仓颉客户端的 5 个跟踪文件 |
+| **入库文件** | **65 个**：`server` 25 · `entry` 18 · `docs` 9 · `AppScope` 5 · 根配置 7 · 其它 1 |
+| **`server/build/` 是构建产物** | 构建产物、冒烟/TLS 测试数据、日志都不入库。**下次跑测试前先执行 `build.ps1`** |
+| **保留（不入库）** | `server/dist/`（完整部署包，可直接部署）· `server/certs/`（证书 + 私钥）· `oh_modules/`（鸿蒙依赖，重装需联网）· `.idea/`、`local.properties` · `entry/build/`（HAP 产物） |
