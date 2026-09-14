@@ -215,12 +215,23 @@ public func checkAccess(m: Member, a: Action, t: Target): ?String {
     /* 2. 动作语义层（不看部门范围，但要读角色档位）
      *
      * 「不可作用于与自己**同权或更高权**的人」（2026-09-14 定，当天从"仅重置密码"
-     * **推广到改名 / 改角色 / 禁用**）。
+     * **推广到改名 / 改角色 / 禁用 / 审批分配 `assign`**）。
      *
      * 只保护"重置密码"是不够的：副会长档在 roleAllows 里对
      * EditMemberName / SetRole / DisableMember 只排除了 president，
      * 于是**副会长可以把另一位副会长降级为 member，或直接禁用**——
      * 同权之间本就不该能互相处置。现在这几类动作一起受这条约束。
+     *
+     * N-10 的教训：第一次推广时漏了 `assign` / `assign-batch`（它们同样写 role 与 status），
+     * 结果副会长仍能降级同权者，甚至把会长刚移出的同权副会长"复活"（推翻会长的决定）。
+     * 所以这里把**所有能写 role / status 的路径**列出来对账，新增接口时回到这张表：
+     *   PATCH /members/{id}                     → SetRole / EditMemberName  ✅
+     *   POST  /members/{id}/disable             → DisableMember            ✅
+     *   POST  /members/{id}/assign              → AssignPending            ✅
+     *   POST  /members/assign-batch             → AssignPending（逐条判）   ✅
+     *   POST  /members/{id}/transfer-presidency → 会长独占                 —
+     *   DELETE /depts/{id}（清 dept_id）        → 会长独占                 —
+     *   POST  /auth/register（建 pending 账号） → 不属"处置既有成员"        —
      *
      * 规则本身一次覆盖三种情况：
      *   · 自己与自己同权 → "重置密码"连自己也禁（见下）；其余动作对自己网开一面；
@@ -241,6 +252,11 @@ public func checkAccess(m: Member, a: Action, t: Target): ?String {
         case SetRole => true
         case DisableMember => true
         case EditMemberName => true
+        /* N-10：assign / assign-batch 也是成员处置类动作（能改 role 与 status）。
+         * 漏掉它的后果有两个面：① 副会长可降级同权副会长；
+         * ② 副会长能用 assign 把会长刚移出的同权副会长"复活"，推翻会长的决定。
+         * 注意 pending 目标（role=""，档位 0）不会被误拦 —— 审批待分配照常可用。 */
+        case AssignPending => true
         case _ => false
     }
     let isSelf = t.is_self || (t.member_id > 0 && t.member_id == m.id)

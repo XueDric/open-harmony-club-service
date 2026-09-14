@@ -522,6 +522,16 @@ func testPerms(t: TR): Unit {
     t.ok("会长重置副会长（更低档）允许", can(pres, Action.ResetPassword, peerVp))
     t.ok("副会长重置部长（更低档）允许", can(vp, Action.ResetPassword, sameDeptLead))
     t.ok("会长重置普通成员（更低档）允许", can(pres, Action.ResetPassword, sameDeptMember))
+    /* N-10：assign / assign-batch 同样写 role 与 status，属成员处置类动作，
+     * 必须受同一条同权约束（第一次推广时漏了它们，副会长据此仍可降级同权者，
+     * 甚至把会长刚移出的同权副会长"复活"）。 */
+    t.ok("副会长用 assign 降级另一位副会长 拒（N-10）", !can(vp, Action.AssignPending, peerVp))
+    t.ok("会长用 assign 调整副会长 允许（未过度收紧）", can(pres, Action.AssignPending, peerVp))
+    let pendingTgt = Target()
+    pendingTgt.member_id = 20
+    pendingTgt.target_role = ""        /* 待分配成员还没有角色（档位 0） */
+    pendingTgt.dept_id = 0
+    t.ok("副会长审批待分配成员 允许（N-10 未误拦 pending）", can(vp, Action.AssignPending, pendingTgt))
     t.ok("会长对自己重置 拒（N-7）", !can(pres, Action.ResetPassword, sameDeptPres))
     t.eqs("会长对自己重置的错误码（N-7）",
         checkAccess(pres, Action.ResetPassword, sameDeptPres) ?? "", "FORBIDDEN_ROLE")

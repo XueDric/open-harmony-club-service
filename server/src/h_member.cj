@@ -362,7 +362,13 @@ public func handleMemberAssignBatch(ctx: Context, s: Store): Unit {
                     }
                     match (s.members.get(id)) {
                         case Some(tgt) =>
-                            if (tgt.role == "president" && presidentCount(s) <= 1) {
+                            /* N-10：外层那次 requireAccess 传的是**裸 Target()**，只能挡角色维度
+                             * （部长 / 成员），挡不住同权。所以这里逐条按成员建 Target 再判一次；
+                             * 失败写进 bad 数组，保持"绝不整体回滚、逐条报告"的批量语义。 */
+                            let deny = checkAccess(actor, Action.AssignPending, targetOf(actor, tgt)) ?? ""
+                            if (deny.size > 0) {
+                                addFail(bad, id, deny)
+                            } else if (tgt.role == "president" && presidentCount(s) <= 1) {
                                 addFail(bad, id, "FORBIDDEN_LAST_PRESIDENT")
                             } else {
                                 /* M-4：批量路径同样可能复活已退出成员，单独计数并单独记账 */

@@ -535,6 +535,20 @@ try {
     $r = Call-Api "GET" "/api/v1/auth/me" $null $presToken
     Check "会长令牌仍然有效（推广未误伤）" ($r.status -eq 200) "status=$($r.status)"
 
+    # N-10：assign / assign-batch 也是成员处置类动作（同样写 role 与 status），
+    # 必须受同一条同权约束。此前同权用例只走 PATCH / disable / reset-password 三条路，
+    # 于是这两条路径漏了 —— "一个能力只测了一条实现路径"，与 H-1 的假绿灯同模式。
+    $r = Call-Api "POST" "/api/v1/members/$peerId/assign" @{ dept_id = 1; role = "member" } $vpToken
+    Check "副会长用 assign 降级另一位副会长 -> 403 FORBIDDEN_ROLE（N-10）" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_ROLE")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/assign-batch" @{ member_ids = @($peerId); dept_id = 1; role = "member" } $vpToken
+    $peerFail = $r.json.data.failed | Where-Object { $_.id -eq $peerId }
+    Check "批量 assign 对同权者 -> failed 记 FORBIDDEN_ROLE（N-10）" (($r.status -eq 200) -and ($null -ne $peerFail) -and ($peerFail.code -eq "FORBIDDEN_ROLE")) "status=$($r.status) json=$($r.json | ConvertTo-Json -Compress)"
+    # 反证：没有过度收紧 —— 会长对同权目标仍放行，同权者仍能合法处置更低档的人
+    $r = Call-Api "POST" "/api/v1/members/$peerId/assign" @{ dept_id = 1; role = "vice_president" } $presToken
+    Check "会长用 assign 调整副会长 -> 200（未过度收紧）" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/members/$newId/assign" @{ dept_id = $deptPub; role = "member" } $vpToken
+    Check "副会长用 assign 调整普通成员（更低档）-> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+
     $r = Call-Api "POST" "/api/v1/depts" @{ name = "部长想建的部门" } $leadToken
     Check "部长新建部门 -> 403" ($r.status -eq 403) "status=$($r.status)"
     $r = Call-Api "POST" "/api/v1/members/$stillId/assign" @{ dept_id = $deptOps; role = "member" } $leadToken
