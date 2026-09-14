@@ -158,6 +158,7 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 | 25 | **部署包里带着私钥** | `server/dist/club-server/certs/key.pem` 与 `server/certs/key.pem` 都必须在 `.gitignore` 里；`git check-ignore -v <路径>` 自检 |
 | 26 | **局部编辑会让 `.ps1` 丢掉 BOM** | 第 11 条讲的是"新脚本要带 BOM"，这里补上更隐蔽的一半：**已经正常的脚本被局部改写后 BOM 会消失**（多数工具默认写无 BOM 的 UTF-8）。下一次运行时整个文件按 ANSI 解析，中文变乱码，报出 `意外的标记"build\smoke-data"`、`表达式或语句中包含意外的标记` 这类**看起来像手写语法错误**的解析失败——很容易误判成"脚本改坏了"。判定：`[System.IO.File]::ReadAllBytes($p)[0..2]` 是否为 `EF BB BF`。改完 `.ps1` 必须确认 BOM 仍在。**2026-09-14 实测补充**：用**文件编辑工具**（不是 shell）对 `smoke.ps1` 做局部编辑，BOM **同样会丢**（编辑前 `EF BB BF`、编辑后没有），已手动补回 —— 所以"只要不用 shell 处理就没事"是错的，**任何局部编辑之后都要查一遍** |
 | 27 | **不要用 PowerShell 双引号字符串处理 `.md` / `.cj` / `.ps1` 的内容** | 双引号里反引号是转义引导符：反引号 + `r` → CR、+ `a` → BEL、+ `t` → TAB、+ `n` → LF。markdown 里的代码跨度（如 `` `restore-member` ``、`` `router.middleware()` ``）**正好全部命中**，于是反引号与首字母被静默吃掉，行被拆断或塞进不可见控制字符——本次真把 `docs/code-review.md` 写坏（2 个裸 BEL 字节 + 3 行残缺重复片段）。改用文件编辑工具，或用**单引号**字符串（单引号里反引号不是转义符）。改完自检非法控制字符（脚本见 `docs/code-review.md` 的 N-2 条） |
+| 28 | **`Get-Content` 读 UTF-8 无 BOM 的中文文件会丢行** | PS 5.1 不带 `-Encoding UTF8` 时按 **ANSI** 解码：某些 UTF-8 中文字节落在 GBK **前导字节**区间（0x81–0xFE），会把紧跟其后的 `0x0A` 当成第二字节**吞掉**，两行被并成一行 —— 于是**行数统计与内容都不可信**。实测：`docs\HANDOFF.md` 真实 **371** 行，`(Get-Content).Count` 只报 **283**；`docs\frontend-brief.md` 真实 **256** 行，只报 **222**。读文本一律用 `Get-Content -Encoding UTF8`，或直接用文件工具；字节级检查（`[System.IO.File]::ReadAllBytes`）不受影响 |
 
 ---
 
