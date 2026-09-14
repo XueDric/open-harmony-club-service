@@ -589,3 +589,243 @@ cd build
 ```powershell
 git show 08db1fc:docs/code-review.md
 ```
+
+---
+
+# 第三轮复验（2026-09-14 · 提交 `807977d` / `5129fc8`）
+
+> 上文的 9 条新发现 N-1…N-9 由 `807977d` 处理（server 9 个文件，+462 / −39），
+> `5129fc8` 同步文档与测试基线。本部分是**第三轮独立复验**：同样从提交源码重编译、
+> 用我自己的请求重打真实 HTTP，并额外做了一次**全路径枚举**（把所有能写
+> `role` / `status` 的语句列出来），因此多找到 1 条缺口（**N-10**）。
+
+| 项 | 值 |
+| --- | --- |
+| 复验对象 | `807977d`（处理 N-1…N-9 + 同权收紧）、`5129fc8`（文档与基线 297/343/22） |
+| 复验方式 | 删 exe 重编译 → 重跑三套 → 独立实例重打 → **全路径枚举** → 跨 IP 旁证 |
+| 结论 | N-1…N-9 **全部确认修复**；本轮新发现 4 条（1 中 / 1 低 / 2 提示），其中 **N-10 是缺口，待修** |
+| 复核方改动 | 复验期间**未改动任何文件**，`git status` 全程干净（本次追加除外） |
+
+## 一、基线（自行重编译 + 重跑）
+
+| 套件 | 第二轮基线 | 提交声明 | **我的实测** |
+| --- | --- | --- | --- |
+| 单测 `club-server.exe test` | 273 / 0 | 297 / 0 | **PASS 297 / FAIL 0** |
+| HTTP 冒烟 `tests/smoke.ps1` | 325 / 0 | 343 / 0 | **PASS 343 / FAIL 0** |
+| TLS `tests/tls-check.ps1` | 22 / 0 | 22 / 0 | **PASS 22 / FAIL 0** |
+
+> 值得单独记一笔：本轮每条修复都附了「**回退实测**」（把修复撤回后跑测试，记录变红条数）。
+> 这是"新断言真的会失败"的**自证**，比"测试全绿"强得多——第一轮 H-1 的假绿灯正是缺了这一步。
+> 建议以后每条权限 / 校验类修复都保持这个习惯。
+
+## 二、N-1…N-9 逐条独立复验
+
+| ID | 我的独立实测 | 结论 |
+| --- | --- | --- |
+| **N-1** | 部门名设为 `A&B<script>alert(1)</script>` → 页面出现 `&lt;script&gt;` 与 `A&amp;B`，**原始 `<script>` 不再出现**；中文部门名仍正常可读（多字节未被拆坏） | ✅ |
+| **N-2** | 两个提交的**全部 15 个变更文件**控制字节扫描干净（无孤立 CR / BEL / BS / VT / FF）；`API-NOTES` 第 27 条已落地（L160） | ✅ 未复发 |
+| **N-3** | 结构确认：`### DELETE`(885) → 其 `**说明**` 列表 → `### GET /join/{token}`(905) → `## 3.8`(921)；两个 `**说明**` 块归属正确 | ✅ |
+| **N-4** | `README.md` 已改为 `单测 297 / 冒烟 343`，与 HANDOFF、server-guide 一致 | ✅ |
+| **N-5** | 手工把 `idem` 数组塞入一个字符串 → **进程拒绝启动**，启动日志点名 `idem` | ✅ |
+| **N-6** | 见 §三（做了跨 IP 旁证） | ✅ |
+| **N-7** | 会长 / 副会长 / 部长重置自己 → `403 FORBIDDEN_ROLE`；`PUT /auth/password` 改自己密码 → `200`（通道未受影响） | ✅ |
+| **N-8** | 按约定未改 | ✅ |
+| **N-9** | 落地页响应头含 `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'` | ✅ |
+
+## 三、关键实测输出
+
+**N-6 的跨 IP 旁证**（这条才能真正证伪"按 IP 分桶"）：
+
+```
+经 127.0.0.1：连错 10 次口令           -> 第 11 次起 429
+经 127.0.0.1：用正确口令               -> 429（自己被锁，符合预期）
+经 10.194.46.211（本机 LAN）：正确口令 -> 201 注册成功
+```
+
+→ 换一个源地址就不受锁影响，说明确实是**按源 IP** 分桶，而不是"换了个写法的全局锁"。
+
+**同权收紧**：
+
+```
+副会长重置 另一位副会长      -> 403    副会长禁用 另一位副会长      -> 403
+副会长改 另一位副会长的角色  -> 403    副会长改 另一位副会长的姓名  -> 403
+副会长改 另一位副会长的部门  -> 403
+—— 未过度收紧 ——
+副会长重置 部长（更低档）    -> 200    副会长降级 部长（更低档）    -> 200
+会长禁用 / 恢复 副会长       -> 200    （会长档位最高，不受影响）
+```
+
+## 四、新增的「同权收紧」：方向与落点都对，但有一个缺口
+
+**做对的部分**（建议保持）：
+
+1. 约束落进 `perms.cj` 的 `checkAccess`（动作语义层），**没有**散到 handler 里写 `if` —— 守住"权限判定只有一处"；
+2. 用 `roleRank()` 比较档位，没有再加一串角色字符串判断；
+3. `isSelf` 用 `t.member_id == m.id` 兜底，不只依赖派生的 `is_self`（新调用点漏填时不会静默失效）；
+4. 明确**不复用 `outranks()`**（它对 `president` 短路，会放过"会长重置会长自己"）—— 这个坑看得准；
+5. 主动纠正了自己上一轮的事实错误（"轻舟没有可信客户端 IP"是错的）；
+6. 修完 N-7 之后**继续推广**到改名 / 改角色 / 禁用 —— 这一步是评审报告之外的自主发现。
+
+**缺口见 N-10。**
+
+## 五、本轮新发现
+
+- [x] N-10 `[中]` **`assign` / `assign-batch` 未纳入同权保护**：副会长仍能降级同权副会长，甚至**推翻会长对同权者的移出决定**（**已修**：`AssignPending` 纳入 `peerForbidden`，批量改为逐条判定）
+- [x] N-11 `[低]` `api-design.md` 接口清单里 `assign` / `assign-batch` 的权限没写档位限定词（与 N-10 同源）（**已改**）
+- [x] N-12 `[提示]` `clientIpOf` 对**无方括号的裸 IPv6** 会切出 `":"` 当 key（**已在注释里写明这一退化**）
+- [x] N-13 `[提示]` 按 IP 节流不阻止**分布式**尝试，建议在"已知局限"补一句（**已补**）
+
+### N-10 `assign` / `assign-batch` 未纳入同权保护
+
+**状态**：**已修（2026-09-14）**——`AssignPending` 纳入 `checkAccess` 的 `peerForbidden` 集合；`handleMemberAssignBatch` 改为**逐条**按成员建 `targetOf(actor, tgt)` 判定，失败写进 `bad` 数组（保持"绝不整体回滚、逐条报告"的批量语义）。
+
+**修复方补充**：本轮同时把「**所有能写 `role` / `status` 的路径**」做成对账表写进 `perms.cj` 的注释
+（PATCH / disable / assign / assign-batch ✅；transfer-presidency 与 `DELETE /depts` 会长独占；register 不属"处置既有成员"），
+新增接口时回到那张表核对 —— N-10 的根因不是"漏了一个接口"，而是**此前没有这样一张表**。
+
+**回退实测**：把 `case AssignPending => true` 撤回后 —— 单测 **299 / FAIL 1**；
+冒烟 **345 / FAIL 2**（单条 assign 实际返回 `200`；批量实际返回 `{"succeeded":[8],"failed":[]}`，批量同样能降级同权者）。
+恢复后 **单测 300 / 冒烟 347 / TLS 22 全绿**。
+
+**为什么这次才找到**：不是靠读"哪条被改了"，而是把**所有能写 `role` / `status` 的语句**枚举了一遍：
+
+```
+h_member.cj:189,201   PATCH /members/{id}                  -> SetRole    ✅ 已受保护
+h_member.cj:245       POST  /members/{id}/disable          -> Disable    ✅ 已受保护
+h_member.cj:292-294   POST  /members/{id}/assign                        ❌ 未受保护
+h_member.cj:372-374   POST  /members/assign-batch                       ❌ 未受保护（且传裸 Target()）
+h_member.cj:431-432   POST  /members/{id}/transfer-presidency           ✅ 会长独占
+h_dept.cj:156         删除部门时清 dept_id                              ✅ 会长独占
+h_auth.cj:193-195     注册建 pending 账号                               （非"处置既有成员"）
+```
+
+两条 `assign` 都是 `Action.AssignPending`，而 `AssignPending` **不在**新的 `peerForbidden` 集合里。
+
+**实测（两个面都成立）**
+
+```
+面一 · 同权降级
+  副会长 A 对另一位副会长 B 调 assign(role=member)      -> HTTP 200
+  结果：B 被同权者降级成功，role=member
+
+面二 · 推翻会长的决定
+  会长把副会长 B 移出社团                              -> 200（B status=disabled）
+  副会长 A 用 assign 把 B 拉回来(role=vice_president)   -> HTTP 200
+  结果：B 复活，status=active role=vice_president
+```
+
+`assign-batch` 同样有效（批量把 B 降为 `member` 成功）。面二比面一更值得注意：
+**同权者能撤销会长对另一位同权者的移出决定。**
+
+**对照项（都正常，说明没有过度收紧）**
+
+```
+副会长用 assign 降级会长 -> 409（受"至少一位会长"保护）   ✅
+副会长用 assign 调整部长 -> 200（更低档，合法）           ✅
+会长用 assign 恢复副会长 -> 200                           ✅
+```
+
+**这不只是"某个接口忘了加固"，而是与文档直接矛盾**：`api-design.md:954-960` 已写明这条规则
+"**推广到全部成员处置类动作**"，并说"**本表中副会长那一列的「✅」都应读作"仅限档位低于自己的人"**"。
+`assign` / `assign-batch` 正是成员处置类动作。
+
+**为什么测试没拦住**：`smoke.ps1` 的同权用例走的是 `PATCH /members`（角色 / 姓名）、`disable`、
+`reset-password` 三条路，**从没用 `assign` 作为同权向量**（所有 `assign` 调用都用会长令牌）。
+即"一个能力只测了一条实现路径"—— 与第一轮 H-1 的假绿灯是**同一个模式**。
+
+**修法（有个坑，别只改一半）**
+
+1. `perms.cj` 的 `peerForbidden` 加 `case AssignPending => true`。
+   `handleMemberAssign` 已经传 `targetOf(actor, tgt)`，改完即生效；`pending` 目标（`role=""`，rank 0）不会被误拦。
+2. **`handleMemberAssignBatch` 必须一起改**：它现在传的是**裸 `Target()`**（`member_id=0`、`target_role=""`），
+   即使加了 `AssignPending` 也拦不住。需要把判定挪进循环、按成员建 `targetOf(actor, tgt)`，
+   并把失败写进已有的 `bad` 数组（`addFail(bad, id, "FORBIDDEN_ROLE")`）——
+   这样才不破坏已定的"批量绝不整体回滚、逐条报告"语义。
+3. 补冒烟用例：`副会长 A 对副会长 B 调 assign → 403`（单条 + 批量各一条）。
+
+### N-11 `api-design.md` 接口清单缺档位限定词
+
+**状态**：**已修（2026-09-14）**——`api-design.md` §6.1 接口清单的两行已加上「**仅限档位低于自己者**」限定词
+
+`api-design.md:1555-1556` 仍把 `assign` / `assign-batch` 的权限写作"会长 / 副会长"，
+没有 L954-960 那条"仅限档位低于自己的人"的限定词。改 N-10 时同步这两行。
+
+### N-12 `clientIpOf` 对无方括号的裸 IPv6
+
+**状态**：**已按建议处理（2026-09-14）**——在 `h_ops.cj` 的 `clientIpOf` 注释里写明这一退化及其后果（这些请求共用一个桶 → 退化为全局，**不是漏洞**），并注明"真要严谨应先判断有无方括号再决定切法"
+
+`clientIpOf` 先找 `]`（`[::1]:port` 形态）；找不到再按**最后一个冒号**切。
+若对端地址是无方括号、无端口的裸 IPv6（如 `::1`），最后一个冒号会切出 `":"` 当 key。
+
+实践中 `remoteAddr` 形如 `[::1]:14764`（已方括号），所以只会出现在异常形态下，
+后果是这些请求共用一个桶（退化为全局），**不是漏洞**。建议在函数注释里写明这一退化。
+
+### N-13 按 IP 节流不阻止分布式尝试
+
+**状态**：**已按建议处理（2026-09-14）**——`api-design.md` §2.3 注 6 的"已知局限"已补一句：按 IP **不阻止分布式尝试**（IPv6 在一个 /64 内轮换源地址尤其便宜），安全性最终依赖口令长度（≥ 6 位，26⁶ ≈ 3.09 亿），别把"按 IP"读成"不可爆破"
+
+改成按 IP 后，单 IP 的尝试上限降为"15 分钟 10 次 + 递增退避"，代价是**不再阻止分布式尝试**
+（IPv6 在一个 /64 内轮换源地址尤其便宜）。以 6 位口令（26⁶ ≈ 3.09 亿）计，社团级攻击者仍不可行，
+所以这是**取舍而非缺陷**。建议在 `api-design` §2.3 的"已知局限"里补一句
+"按 IP 不阻止分布式尝试，安全性依赖口令长度（≥6 位）"，免得后人把"按 IP"读成"不可爆破"。
+
+## 六、复验中的一条环境复现（与 26 / 27 号坑互证）
+
+我用文件工具生成 `.ps1` 时拿到的是**无 BOM 的 UTF-8**，PS 5.1 按 ANSI 读 → 中文全变乱码，
+报出 `意外的标记` 一类**看起来像手写语法错误**的解析失败，脚本完全不可执行；补上 BOM 后立刻解析通过。
+
+→ 这说明 `API-NOTES` 第 26 / 27 条不是理论记录，而是**高频真实故障**。
+建议：凡用"写入文件"的方式生成 / 改写 `.ps1`，之后固定跑一次 BOM 自检。
+
+## 七、本轮未覆盖
+
+| 项 | 说明 |
+| --- | --- |
+| 客户端 DevEco 构建 | `entry/` 仍未改动 |
+| 并发 / 压力 | L-7 仍是"代码结构判断" |
+| M-5 行为观测 | 仍需慢接口才能看到 `x-timeout-ms` / 408 |
+| N-8 / L-13 | 按约定保留不改 |
+
+## 附录 E · 第三轮复现命令
+
+```powershell
+cd server
+Remove-Item build\club-server.exe -Force -ErrorAction SilentlyContinue
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+.\build\club-server.exe test                                              # PASS 297 / FAIL 0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # PASS 343 / FAIL 0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1 # PASS 22  / FAIL 0
+
+# N-10 的最小复现（两个面）
+cd build
+.\club-server.exe init-admin 13800000000 password123 v3-data
+.\club-server.exe serve 18081 v3-data
+#  面一：会长建两个副会长 vpA / vpB，再用 vpA 的令牌
+#        POST /api/v1/members/{vpB}/assign  { role: "member", dept_id: <任意> }  -> 200（期望 403）
+#  面二：会长     POST /api/v1/members/{vpB}/disable                             -> 200
+#        用 vpA   POST /api/v1/members/{vpB}/assign { role: "vice_president" }   -> 200（期望 403）
+
+# N-6 的跨 IP 旁证（需要第二个源地址：打本机 LAN 地址即可）
+#  经 127.0.0.1 连错 10 次口令后，改打 http://<本机 LAN IP>:18081/... 用正确口令 -> 201
+```
+
+**N-10 的全路径枚举命令**（比读 diff 可靠，建议固化为权限回归的固定动作）：
+
+```powershell
+Select-String -Path server\src\h_*.cj -Pattern '(tgt|actor|m)\.(role|status|dept_id)\s*=' -Encoding UTF8
+```
+
+---
+
+## 附录 F · 修复方补充：一次 TLS 偶发观察（2026-09-14）
+
+修 N-10 并做回退验证、重跑三套的过程中，`tls-check.ps1` 出现过**一次** `PASS 21 / FAIL 1`
+（当时只取了输出尾部，**未保留失败条目**）。此后**连续 4 次**重跑均为 `PASS 22 / FAIL 0`，未能复现。
+
+已知信息只有一条：那一次发生在"恢复源码 → 重新编译 → **紧接着**串行跑三套"之后。
+怀疑与"刚结束编译/其它套件就立刻起服务"的时序有关，但**没有任何证据**，故仅作记录。
+
+若再次出现：请保留完整输出以定位具体条目。附录 B 记录过一次由沙箱引起的 TLS **假阴性**
+（openssl 无法创建 signal pipe、Schannel 挡住 curl），排查时可先比对是否为同类环境因素。
+
+处理完 N-10…N-13 后的**当前基线**：**单测 300 / 冒烟 347 / TLS 22 全绿**（以 `README.md` 顶部为准）。
