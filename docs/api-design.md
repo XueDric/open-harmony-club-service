@@ -252,7 +252,7 @@ can(member, action, target) -> bool
 
 **这意味着 §1.5 的 HTTPS 要求不再需要额外引入 Nginx 即可满足。**
 
-但当前发布版本**编译不过**（缺失 import、且调用了 stdx 1.1.3.1 中未实现的静态方法）。详细缺陷与已验证的补丁见 `qingzhou-tls-verification.md`。
+但当前发布版本**编译不过**（缺失 import、且调用了 stdx 1.1.3.1 中未实现的静态方法）。详细缺陷与已验证的补丁见上层 `cangjie-upstream\qingzhou-tls-verification.md`。
 
 **决定：采用框架原生 TLS，不再引入 Nginx。** 已于 2026-09-13 向轻舟团队反馈 DEF-1；上游修复前，开发期打本地补丁。
 
@@ -1707,8 +1707,7 @@ progress(P) =
 | `api-design.md` | Part 1–6 完成 | **接口设计 39 个**，错误码/权限已与实现对齐；2026-09-13 修订部门权限与会长产生路径 |
 | `deploy-windows-verify.md` | — | 服务端部署与验证（Windows），**待你跑步骤 0** |
 | `frontend-brief.md` | v1.0 | 前端对接说明（精简版） |
-| `qingzhou-tls-requirement.md` | v1.0 | 已发轻舟团队 |
-| `qingzhou-tls-verification.md` | — | 已验证他们交付的 TLS，已发轻舟团队 |
+| *对外材料（已移出仓库）* | — | `qingzhou-tls-requirement.md`（已发轻舟团队）、`qingzhou-tls-verification.md`（已验证他们交付的 TLS）—— 见上层 `cangjie-upstream\` |
 | `server-guide.md` | — | **服务端**：构建/运行/测试与设计约定 |
 | `API-NOTES.md` | — | **服务端**：编译期 API 事实清单与踩坑记录（探针实测） |
 

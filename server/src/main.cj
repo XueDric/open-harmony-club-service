@@ -349,7 +349,7 @@ func cmdServe(port: UInt16, dir: String): Int64 {
  * HTTPS 启动。
  *
  * 轻舟的 serveTls(port, certPem, keyPem) 收的是 **PEM 字符串**而不是文件路径，
- * 因此读文件、异常处理都在调用方（见 ..\docs\qingzhou-tls-verification.md 第 3 节的责任转移）。
+ * 因此读文件、异常处理都在调用方（见上层 cangjie-upstream\qingzhou-tls-verification.md 第 3 节的责任转移）。
  *
  * ⚠ 绝不静默降级：证书或私钥读不到、解析失败时**直接退出**，
  * 不允许 catch 之后回退到明文 serve()——那会让"HTTPS 没起来"变成静默的明文服务。

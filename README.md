@@ -56,7 +56,6 @@ server/                      服务端（仓颉）
   build/                     构建输出（每次编译重建，不入库）
   dist/                      部署包（含私钥，不入库）
   certs/                     自签证书与私钥（不入库）
-cangjie-repro/repro.cj       给仓颉团队的最小复现源码
 entry/  AppScope/  hvigor/   鸿蒙客户端工程（DevEco 要求这些在根目录）
 docs/                        见下方「文档索引」
 ```
@@ -103,17 +102,13 @@ cd build
 | --- | --- | --- |
 | **`docs/HANDOFF.md`** | **交接说明**：项目现状、已冻结设计、验证过的技术事实、未决事项 | **接手项目先看这个** |
 | `docs/server-guide.md` | 服务端指南：构建/运行/测试、进度、两条实现纪律 | 动服务端代码前看 |
-| **`docs/API-NOTES.md`** | 编译期 API 事实清单 + **26 条踩坑记录** | 加新函数前先查（避让框架同名符号） |
+| **`docs/API-NOTES.md`** | 编译期 API 事实清单 + **27 条踩坑记录** | 加新函数前先查（避让框架同名符号） |
 | `docs/api-design.md` | **接口设计的唯一权威**：39 个接口逐条定义 | 写服务端时全程对照 |
-| **`docs/code-review.md`** | **代码评审报告（两轮）**：第一轮 24 条（3 个 P0 权限漏洞 + 8 个 P1 + 13 个 P2）已全部修复并独立复验；第二轮记录复验证据与 9 条新发现 | 想了解"哪些坑已经踩过" |
+| **`docs/code-review.md`** | **代码评审报告（三轮）**：第一轮 24 条（3 P0 + 8 P1 + 13 P2）、第二轮 9 条、第三轮 4 条 —— **全部修复并独立复验**，附回退实测证据 | 想了解"哪些坑已经踩过" |
 | `docs/v1-scope.md` | 范围基准：11 页面、6 张表、19 条业务规则、权限矩阵 | 想知道"这个要不要做" |
 | `docs/frontend-brief.md` | 前端对接精简版 | 客户端同事看 |
 | `docs/deploy-windows-verify.md` | 部署与验证步骤、目标配置基线 | 部署时看 |
-| `docs/qingzhou-tls-requirement.md` | 我们给轻舟团队提的 TLS 需求 | 追溯 TLS 需求来源 |
-| `docs/qingzhou-tls-verification.md` | 轻舟 TLS 实测与缺陷清单（DEF-1…5） | 遇到 TLS 问题时看 |
-| `docs/cangjie-runtime-startup-crash.md` | 仓颉运行时启动即崩的缺陷报告（已提交上游） | 需要了解那次故障时看 |
-| `docs/cangjie-issue-submission.txt` | 提交给仓颉团队的 Issue 稿件存档 | 同上 |
-| `cangjie-repro/repro.cj` | 最小可复现源码（零依赖） | 上游要复现代码时给这个 |
+| *（对外材料已移出仓库）* | 仓颉运行时缺陷报告 + Issue 稿件 + 最小复现（`repro.cj`）、轻舟 TLS 需求与实测 —— 都在仓库上层 `cangjie-upstream\`（完整路径 `E:\harmonyOS\cangjie-upstream\`） | 追溯上游问题来源时 |
 
 ---
 

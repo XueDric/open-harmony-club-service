@@ -233,6 +233,6 @@ task_id → { event_id, cached_due_at, cached_status }
 | --- | --- |
 | `api-design.md` | **完整接口设计**：每个接口的请求/响应/错误码/权限 |
 | `v1-scope.md` | 范围基准：11 个页面、6 张表、19 条业务规则 |
-| `qingzhou-tls-verification.md` | 服务端 TLS 实测结果（协议版本、自签证书注意事项） |
+| *（已移出仓库）* | 服务端 TLS 实测结果（协议版本、自签证书注意事项）→ 上层 `cangjie-upstream\qingzhou-tls-verification.md` |
 
 **接口已冻结。** 如需变更，请先提出来——改动会同时影响服务端与本文档。

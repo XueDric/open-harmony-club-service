@@ -227,9 +227,10 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 > **更正**：早前我们把"`PendingFileRenameOperations` 非空"当作"系统更新未收尾"的证据。
 > 卸载后**运行正常时该项依然非空**，该判据不成立，特此更正。
 
-> 完整缺陷报告（可直接提交给仓颉团队）见仓库根目录 `cangjie-runtime-startup-crash.md`；
+> 完整缺陷报告（可直接提交给仓颉团队）**已移出仓库**，见上层
+> `cangjie-upstream\cangjie-runtime-startup-crash.md`；
 > 当时的证据包（4 份 WER 崩溃报告、事件日志、PE 对照输出）是一次性产物，已按需删除；
-> 结论都固化在本文档与同目录的 `cangjie-runtime-startup-crash.md` 里。
+> 结论都固化在本文档里。
 
 ---
 

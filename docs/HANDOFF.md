@@ -64,9 +64,9 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | `api-design.md` | **完整接口设计** Part 1–6，39 个接口逐条定义 | **写服务端时全程对照** |
 | `frontend-brief.md` | 前端对接精简版 | 客户端同事看 |
 | `deploy-windows-verify.md` | 部署与验证、目标配置基线 | 部署时看 |
-| `qingzhou-tls-verification.md` | 轻舟 TLS 实测与缺陷清单 | 遇到 TLS 问题时看 |
+| *（对外材料已移出仓库）* | 轻舟 TLS 实测与缺陷清单、仓颉运行时缺陷报告 —— 见上层 `cangjie-upstream\` | 追溯上游问题时看 |
 | **`server-guide.md`** | **服务端**：构建/初始化/运行/测试、进度表、两条实现纪律 | **写服务端时先看** |
-| **`API-NOTES.md`** | **服务端**：编译期 API 事实清单 + 15 条踩坑记录 | 加新函数前先查（避让框架同名符号） |
+| **`API-NOTES.md`** | **服务端**：编译期 API 事实清单 + **27 条**踩坑记录 | 加新函数前先查（避让框架同名符号） |
 
 ---
 
@@ -160,7 +160,7 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 +        let key: PrivateKey = GeneralPrivateKey.decodeFromPem(keyPem)
 ```
 
-已反馈轻舟团队（`qingzhou-tls-verification.md`）。**上游修复后可撤销。**
+已反馈轻舟团队（见上层 `cangjie-upstream\qingzhou-tls-verification.md`）。**上游修复后可撤销。**
 
 ---
 
@@ -291,8 +291,8 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 ——这也解释了"`msvcrt!wcslen` 机器码一字未改却崩在那里"。
 
 完整证据链与复现源码见：
-`cangjie-runtime-startup-crash.md`（**已提交给仓颉团队**）、`API-NOTES.md` §5、
-仓库根目录的 `cangjie-repro/repro.cj`。
+上层的 `cangjie-upstream\cangjie-runtime-startup-crash.md`（**已提交给仓颉团队**）、
+`API-NOTES.md` §5、以及同目录的 `cangjie-upstream\repro.cj`。
 （当时的证据 zip 是一次性产物，已按需删除；结论都固化在上述文档里。）
 
 

@@ -3,7 +3,7 @@
 - 状态：**待执行**
 - 服务器：**Windows**（与开发机同平台）
 - 前置：`v1-scope.md` 技术栈已确认
-- 关联：`qingzhou-tls-verification.md`（轻舟 TLS 实测）、`frontend-brief.md`
+- 关联：`frontend-brief.md`（轻舟 TLS 实测已移出仓库，见上层 `cangjie-upstream\qingzhou-tls-verification.md`）
 
 > 本文替代原 `spike-linux-verify.md`。原文档基于「服务器是 Linux」的前提，**该前提已不成立**，
 > 且其中大量内容（Linux SDK、glibc、交叉编译、`.so.3`）现在都不适用。**原文档已删除，避免误导。**
@@ -183,7 +183,7 @@ $openssl = "D:\Program Files\Git\usr\bin\openssl.exe"
 → **关卡 3、4**
 
 > ⚠️ 测 TLS 1.1 时**必须加 `@SECLEVEL=0`**，否则是客户端自己不肯发起（假阴性），
-> 那不能证明服务端行为。详见 `qingzhou-tls-verification.md` 第 4 节。
+> 那不能证明服务端行为。详见上层 `cangjie-upstream\qingzhou-tls-verification.md` 第 4 节。
 
 ### 步骤 5 · 自签证书（**必须带 SAN**）
 

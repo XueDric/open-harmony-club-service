@@ -1,6 +1,6 @@
 ﻿# 社团管理工具 · 服务端构建脚本
 #
-# 编译路径（已在 ..\docs\..\docs\HANDOFF.md §2 / ..\docs\qingzhou-tls-verification.md §1.2 实测过）：
+# 编译路径（已在 ..\docs\HANDOFF.md §2 / 上层的 cangjie-upstream\qingzhou-tls-verification.md §1.2 实测过）：
 #   cjc 1.1.3 + stdx 1.1.3.1（静态）+ 轻舟源码，**同一次调用、同一个包**。
 #
 # 为什么不用 cjpm：轻舟自己的 examples/*.cj 都写 `package qingzhou`，
@@ -45,7 +45,7 @@ $env:PATH = (Join-Path $CangjieHome "bin") + ";" +
 $libs = (Get-ChildItem "$Stdx\libstdx*.a" | ForEach-Object { "-l:$($_.Name)" })
 
 # 排除框架自己的入口与测试：main.cj 有 main()、unit_tests.cj / manual_runner.cj 是框架自测，
-# 我们的 main.cj 提供入口。这与 ..\docs\qingzhou-tls-verification.md 里编译 examples/https.cj 的命令一致。
+# 我们的 main.cj 提供入口。这与上层 cangjie-upstream\qingzhou-tls-verification.md 里编译 examples/https.cj 的命令一致。
 $fw = Get-ChildItem "$QingZhou\src\*.cj" |
       Where-Object { $_.Name -notin @('main.cj', 'unit_tests.cj', 'manual_runner.cj') } |
       ForEach-Object { $_.FullName }
