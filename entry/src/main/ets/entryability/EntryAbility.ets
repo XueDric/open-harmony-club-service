@@ -1,40 +1,62 @@
-import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
+import { TokenStore } from '../store/TokenStore';
 
 const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    hilog.info(DOMAIN, 'club', '%{public}s', 'EntryAbility onCreate');
+    try {
+      this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
+    } catch (err) {
+      hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
+    }
+    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
   }
 
   onDestroy(): void {
-    hilog.info(DOMAIN, 'club', '%{public}s', 'EntryAbility onDestroy');
+    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onDestroy');
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
-    // 主窗口创建完成：加载首页（ArkTS 页面入口在 resources/base/profile/main_pages.json 登记）
-    hilog.info(DOMAIN, 'club', '%{public}s', 'EntryAbility onWindowStageCreate');
+    // Main window is created, set main page for this ability
+    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
 
-    windowStage.loadContent('pages/Index', (err) => {
-      if (err.code) {
-        hilog.error(DOMAIN, 'club', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err) ?? '');
-        return;
-      }
-      hilog.info(DOMAIN, 'club', 'Succeeded in loading the content.');
+    // 初始化 TokenStore
+    const tokenStore = TokenStore.getInstance();
+    tokenStore.init(this.context).then(() => {
+      // 启动页 → 路由守卫检查登录状态
+      windowStage.loadContent('pages/SplashPage', (err) => {
+        if (err.code) {
+          hilog.error(DOMAIN, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));
+          return;
+        }
+        hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
+      });
+    }).catch((err: Error) => {
+      hilog.error(DOMAIN, 'testTag', 'Failed to init TokenStore. Cause: %{public}s', JSON.stringify(err));
+      // 即使初始化失败也加载启动页
+      windowStage.loadContent('pages/SplashPage', (err) => {
+        if (err.code) {
+          hilog.error(DOMAIN, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));
+        }
+      });
     });
   }
 
   onWindowStageDestroy(): void {
-    hilog.info(DOMAIN, 'club', '%{public}s', 'EntryAbility onWindowStageDestroy');
+    // Main window is destroyed, release UI related resources
+    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageDestroy');
   }
 
   onForeground(): void {
-    hilog.info(DOMAIN, 'club', '%{public}s', 'EntryAbility onForeground');
+    // Ability has brought to foreground
+    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
   }
 
   onBackground(): void {
-    hilog.info(DOMAIN, 'club', '%{public}s', 'EntryAbility onBackground');
+    // Ability has back to background
+    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
   }
 }
