@@ -21,12 +21,12 @@ export interface PlanBrief {
   title: string;
   owner: MemberBrief | null;
   dept: DeptBrief | null;
-  due_at: number;
+  due_at: string | null;
   progress: PlanProgress | null;  // total=0 时为 null
   task_count: number;
   child_count: number;
-  created_at: number;
-  updated_at: number;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 /** PlanDetail = PlanBrief + — views.cj:planDetail */
@@ -56,14 +56,14 @@ export interface CreatePlanRequest {
   parent_id?: number;
   dept_id?: number;
   desc?: string;
-  due_at?: number;
+  due_at?: string | null;
 }
 
 export interface UpdatePlanRequest {
   title?: string;
   desc?: string;
   owner_id?: number;
-  due_at?: number;
+  due_at?: string | null;
 }
 
 export interface MovePlanRequest {
@@ -110,8 +110,8 @@ export class PlanApi {
     return this.client.post<PlanDetail>(`/plans/${id}/move`, data);
   }
 
-  /** POST /api/v1/plans/{id}/delete — 删除课题（子课题上提，任务保留） */
+  /** DELETE /api/v1/plans/{id} — 删除课题（子课题上提，任务保留） */
   async delete_(id: number): Promise<ApiResponse<Record<string, never>>> {
-    return this.client.post<Record<string, never>>(`/plans/${id}/delete`);
+    return this.client.delete_<Record<string, never>>(`/plans/${id}`);
   }
 }

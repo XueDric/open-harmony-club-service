@@ -11,7 +11,7 @@ import type { MemberBrief, DeptBrief } from './AuthApi';
 /** 待分配成员视图 = MemberBrief + dept_hint + registered_at */
 export interface PendingMemberView extends MemberBrief {
   dept_hint: DeptBrief | null;
-  registered_at: number;
+  registered_at: string | null;
 }
 
 /** GET /api/v1/members/{id} 响应 */
@@ -27,7 +27,7 @@ export interface MemberDetailResponse {
 /** 注册口令配置 */
 export interface RegisterCodeConfig {
   code: string;
-  updated_at: number;
+  updated_at: string | null;
   updated_by: MemberBrief | null;
 }
 
@@ -138,13 +138,18 @@ export class MemberApi {
     return this.client.post<TransferPresidencyResponse>(`/members/${id}/transfer-presidency`, data ?? {});
   }
 
-  /** GET /api/v1/auth/register-code — 获取注册口令 */
+  /** GET /api/v1/register-config — 获取注册口令 */
   async getRegisterCode(): Promise<ApiResponse<RegisterCodeConfig>> {
-    return this.client.get<RegisterCodeConfig>('/auth/register-code');
+    return this.client.get<RegisterCodeConfig>('/register-config');
   }
 
-  /** POST /api/v1/auth/register-code — 设置注册口令 */
+  /** PUT /api/v1/register-config/code — 设置注册口令 */
   async setRegisterCode(data: SetRegisterCodeRequest): Promise<ApiResponse<RegisterCodeConfig>> {
-    return this.client.post<RegisterCodeConfig>('/auth/register-code', data);
+    return this.client.put<RegisterCodeConfig>('/register-config/code', data);
+  }
+
+  /** POST /api/v1/register-config/rotate — 轮换注册口令 */
+  async rotateRegisterCode(): Promise<ApiResponse<RegisterCodeConfig>> {
+    return this.client.post<RegisterCodeConfig>('/register-config/rotate');
   }
 }

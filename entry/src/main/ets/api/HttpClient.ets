@@ -137,10 +137,10 @@ export class HttpClient {
         return this.handleError<T>(resultData, statusCode);
       }
 
-      // 成功
+      // 成功：剥掉服务端信封 {ok, data}，只把 data 交给调用方
       return {
         ok: true,
-        data: resultData as T,
+        data: resultData?.['data'] as T,
       } as ApiResponse<T>;
     } catch (err) {
       // 网络错误等
@@ -158,22 +158,15 @@ export class HttpClient {
   }
 
   private handleError<T>(result: Record<string, Object> | undefined, statusCode: number): ApiResponse<T> {
-    // 后端错误格式：{error: "CODE", message: "中文消息", fields?: [...]}
-    const code: string = result?.['error'] as string ?? 'UNKNOWN_ERROR';
-    const message: string = result?.['message'] as string ?? '请求失败';
+    // 后端错误格式：{ok:false, error:{code, message, fields:{字段: 提示}}}
+    const errObj = result?.['error'] as Record<string, Object> | undefined;
+    const code: string = (errObj?.['code'] as string) ?? 'UNKNOWN_ERROR';
+    const message: string = (errObj?.['message'] as string) ?? '请求失败';
 
     let fields: Record<string, string> | undefined;
-    const rawFields = result?.['fields'];
-    if (Array.isArray(rawFields)) {
-      fields = {};
-      for (let i = 0; i < rawFields.length; i++) {
-        const item = rawFields[i] as Record<string, string>;
-        const field = item['field'];
-        const msg = item['message'];
-        if (field && msg) {
-          fields[field] = msg;
-        }
-      }
+    const rawFields = errObj?.['fields'];
+    if (rawFields !== undefined && rawFields !== null && !Array.isArray(rawFields)) {
+      fields = rawFields as Record<string, string>;
     }
 
     // 401 自动跳转登录页（排除密码错误场景）
@@ -199,6 +192,10 @@ export class HttpClient {
 
   async patch<T>(path: string, body?: object): Promise<ApiResponse<T>> {
     return this.request<T>(path, { method: 'PATCH', body });
+  }
+
+  async put<T>(path: string, body?: object): Promise<ApiResponse<T>> {
+    return this.request<T>(path, { method: 'PUT', body });
   }
 
   async delete_<T>(path: string): Promise<ApiResponse<T>> {

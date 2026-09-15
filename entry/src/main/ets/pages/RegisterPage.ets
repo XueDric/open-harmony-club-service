@@ -316,7 +316,7 @@ struct RegisterPage {
 
     try {
       const req: RegisterRequest = {
-        code: this.code,
+        register_code: this.code,
         phone: this.phone,
         name: this.name,
         password: this.password,

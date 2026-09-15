@@ -25,10 +25,10 @@ export interface TaskBrief {
   owner: MemberBrief | null;
   dept: DeptBrief | null;
   plan: PlanRef | null;
-  due_at: number;       // 0 = 无截止时间
+  due_at: string | null;       // null = 无截止时间
   is_overdue: boolean;  // 服务端计算的派生量
   blocked: boolean;     // 服务端计算的派生量 (status === 'blocked')
-  updated_at: number;
+  updated_at: string | null;
 }
 
 /** TaskDetail = TaskBrief + — views.cj:taskDetail */
@@ -37,8 +37,8 @@ export interface TaskDetail extends TaskBrief {
   blocker: string;         // blocked 时填值，否则 ""
   plan_path: PlanRef[];    // 课题祖先链（从根到直属）
   created_by: MemberBrief | null;
-  created_at: number;
-  completed_at: number;    // 未完成 = 0
+  created_at: string | null;
+  completed_at: string | null;    // 未完成 = null
 }
 
 // ─── 请求类型 ───
@@ -48,7 +48,7 @@ export interface CreateTaskRequest {
   owner_id: number;
   desc?: string;
   plan_id?: number;
-  due_at?: number;
+  due_at?: string | null;
   /** 客户端生成的幂等 token，防重复提交 */
   client_token?: string;
 }
@@ -58,7 +58,7 @@ export interface UpdateTaskRequest {
   owner_id?: number;
   desc?: string;
   plan_id?: number;
-  due_at?: number;
+  due_at?: string | null;
 }
 
 export interface UpdateTaskStatusRequest {
@@ -145,14 +145,14 @@ export class TaskApi {
     return this.client.patch<TaskDetail>(`/tasks/${id}`, data);
   }
 
-  /** POST /api/v1/tasks/{id}/status — 改状态 */
+  /** PUT /api/v1/tasks/{id}/status — 改状态 */
   async updateStatus(id: number, data: UpdateTaskStatusRequest): Promise<ApiResponse<TaskDetail>> {
-    return this.client.post<TaskDetail>(`/tasks/${id}/status`, data);
+    return this.client.put<TaskDetail>(`/tasks/${id}/status`, data);
   }
 
-  /** POST /api/v1/tasks/{id}/delete — 删除任务 */
+  /** DELETE /api/v1/tasks/{id} — 删除任务（软删） */
   async delete_(id: number): Promise<ApiResponse<Record<string, never>>> {
-    return this.client.post<Record<string, never>>(`/tasks/${id}/delete`);
+    return this.client.delete_<Record<string, never>>(`/tasks/${id}`);
   }
 
   /** POST /api/v1/tasks/lookup — 批量查询任务（日历同步用） */

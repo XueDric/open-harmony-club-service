@@ -2,6 +2,8 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { TokenStore } from '../store/TokenStore';
+import { HttpClient } from '../api/HttpClient';
+import { BASE_URL } from '../config/Env';
 
 const DOMAIN = 0x0000;
 
@@ -12,6 +14,7 @@ export default class EntryAbility extends UIAbility {
     } catch (err) {
       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
     }
+    HttpClient.getInstance().setBaseUrl(BASE_URL);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
   }
 
