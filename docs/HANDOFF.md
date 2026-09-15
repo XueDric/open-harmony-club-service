@@ -2,14 +2,14 @@
 
 > **下个对话从这里开始。** 本文自包含——读完它 + 第 3 节的文档，即可直接接手。
 
-- 更新时间：**2026-09-14**
+- 更新时间：**2026-09-15**
 - 工作区：`E:\harmonyOS\cangjie_web`
 - 设计阶段：**已完成，接口冻结**（39 / 39）
-- **当前阶段：服务端全部完成并验证**（M1–M8，含三轮独立代码评审修复）；**客户端技术栈定为 ArkTS，已接入组内上传的成员模块 3 页并能编译打包（未签名、未接接口）** —— 见 `client-build.md`
-- 三套测试基线：**单测 322 / 冒烟 347 / TLS 22 全绿**（跑法见 `README.md` 顶部）
+- **当前阶段：服务端全部完成并验证**（M1–M11，含三轮独立代码评审修复 + 轻舟升级/CangDB 适配 + 容量基准与四项性能改造 + 第四轮复验的 6 条安全/一致性修复）；**客户端技术栈定为 ArkTS，已接入组内上传的成员模块 3 页并能编译打包（未签名、未接接口）** —— 见 `client-build.md`
+- 三套测试基线：**单测 387 / 冒烟 360 / TLS 22 全绿**（跑法见 `README.md` 顶部；容量基准 `server/tests/bench.ps1` 按需跑，见 `capacity-baseline.md`）
 
 > §8、§9 是**设计阶段**给出的开工建议与待问问题，现已全部执行完，保留作方法论参考；
-> §11 记录服务端从 M1 到 M8 的实际进展，**数字以那里的最新一条为准**。
+> §11 记录服务端从 M1 到 M11 的实际进展，**数字以那里的最新一条为准**。
 
 ---
 
@@ -48,17 +48,30 @@
 
 ### 本机验证过的编译命令
 
+**日常构建用 `server\build.ps1`**（它已处理好轻舟的排除项与我们的源文件）：
+
+```powershell
+cd server
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1   # -> build\club-server.exe + 4 个 DLL
+```
+
+脚本内部做的事（要手写时照此，**排除列表必须与脚本一致**）：
+
 ```powershell
 $CJC  = "D:\Cangjie\bin\cjc.exe"
 $STDX = "E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx"
-$ROOT = "E:\cangjie\qingzhou"
+$FW   = "E:\cangjie\qingzhou"
 $libs = (Get-ChildItem "$STDX\libstdx*.a" | ForEach-Object { "-l:$($_.Name)" })
-$fw   = Get-ChildItem "$ROOT\src\*.cj" |
-        Where-Object { $_.Name -notin @('unit_tests.cj') } |
+# 轻舟：排除自带入口/自测，以及依赖 CangDB 的 store.cj / rbac.cj（那两张改用我们的适配版）
+$fw   = Get-ChildItem "$FW\src\*.cj" |
+        Where-Object { $_.Name -notin @('main.cj', 'unit_tests.cj', 'manual_runner.cj', 'store.cj', 'rbac.cj') } |
         ForEach-Object { $_.FullName }
+$src  = Get-ChildItem "E:\harmonyOS\cangjie_web\server\src\*.cj" | ForEach-Object { $_.FullName }
 
-& $CJC @fw --import-path $STDX -L $STDX @libs -lcrypt32 -Woff unused -o "$ROOT\build\main.exe"
+& $CJC @fw @src --import-path $STDX -L $STDX @libs -lcrypt32 -Woff unused -o "build\club-server.exe"
 ```
+
+> ⚠️ 少排除一个就会报 `can not find package 'cangdb'`，或撞上框架自带的 `main` / 单测符号。
 
 ---
 
@@ -148,7 +161,8 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | 事实 | 说明 |
 | --- | --- |
 | **TLS 可用** | TLS 1.2/1.3 握手成功；TLS 1.0/1.1 **被服务端拒绝**（alert 70）；HTTPS 请求返回 200 |
-| **三套测试全绿** | 单测 **300** / 冒烟 **347** / TLS **22**（2026-09-14；跑法见 `README.md`） |
+| **三套测试全绿** | 单测 **387** / 冒烟 **360** / TLS **22**（2026-09-15；跑法见 `README.md`） |
+| **容量（近千人规模）** | 1000 成员 + 1000 任务（0.51 MB 库）：列表 30 ms 级、写 30 ms 级、4 并发登录 0.9 s；3000 + 3000（1.54 MB）分别约 45 / 48 ms 与 0.98 s。单机单进程**够用**；重新设计的阈值是 `db.json > 20 MB` 或日均写数千次 —— 全部实测见 `capacity-baseline.md` |
 | **部署文件集** | **5 个文件 / 约 18.8 MB**：`club-server.exe` + `libcangjie-runtime.dll` + `libboundscheck.dll` + `libcrypto-3-x64.dll` + `libssl-3-x64.dll`（证书、启动脚本与说明另计）；由 `server/build-package.ps1` 生成 |
 | **运行时只需 2 个 DLL** | runtime 目录有 51 个，只需 `libcangjie-runtime.dll` 与 `libboundscheck.dll` |
 
@@ -243,7 +257,7 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 
 > 下表数字是 **M2 完成当时（2026-09-13）的快照**，保留用于对照；**当前基线见 §11.3 与 `README.md`**。
 
-代码在 `server/src/`（**现为 21 个源文件**），详见 `server-guide.md`。
+代码在 `server/src/`（**现为 23 个源文件**），详见 `server-guide.md`。
 **接口进度（当时）24 / 39**（认证 5 + 组织与成员 19）；其余为任务 8、课题 6、运维 1（`/health` 已做）。
 
 | 验证（2026-09-13 快照） | 结果 |
@@ -290,9 +304,11 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | M4 | Part 5 课题 6 个接口（环形校验、深度 6、删除上提、O(n) 聚合） | ✅ **已完成并验证**（单测 233 / 冒烟 280 全绿） |
 | M5 | 打包部署 · 带 SAN 自签证书 · TLS 关卡 | 🟡 **本机部分已完成**（TLS 22 项全绿 + 部署包 18.8 MB 端到端跑通）；公网部署**卡在服务器步骤 0**（架构 / 公网 IP / 端口 / 防火墙） |
 | M6 | 按 `docs/code-review.md` **第一轮**修缺陷（3 个 P0 权限漏洞 + 8 个 P1 + 13 个 P2，共 24 条） | ✅ **已完成并验证**（单测 273 / 冒烟 325 / TLS 22 全绿，2026-09-14） |
-| M7 | `docs/code-review.md` **第二轮**：独立复验第一轮 24 条（全部确认修复）+ **9 条新发现**（N-1…N-9） | ✅ **已完成**——9 条全部处理（N-8 按约定不改）：N-1（落地页 HTML 转义）/ N-2 / N-3 / N-4 / N-5（`idem` 补 `checkLoaded`）/ **N-6（注册节流改为按客户端 IP + 递增退避，因此未新增接口，接口计数仍是 39 / 39）** / **N-7（不可作用于同权或更高权的人，已从"重置密码"推广到改名 / 改角色 / 禁用）** / N-9（CSP），每条都带"回退即变红"的回归断言。当前基线 **单测 322 / 冒烟 347 / TLS 22 全绿** |
+| M7 | `docs/code-review.md` **第二轮**：独立复验第一轮 24 条（全部确认修复）+ **9 条新发现**（N-1…N-9） | ✅ **已完成**——9 条全部处理（N-8 按约定不改）：N-1（落地页 HTML 转义）/ N-2 / N-3 / N-4 / N-5（`idem` 补 `checkLoaded`）/ **N-6（注册节流改为按客户端 IP + 递增退避，因此未新增接口，接口计数仍是 39 / 39）** / **N-7（不可作用于同权或更高权的人，已从"重置密码"推广到改名 / 改角色 / 禁用）** / N-9（CSP），每条都带"回退即变红"的回归断言。当轮基线 **单测 322 / 冒烟 347 / TLS 22 全绿** |
 | M8 | `docs/code-review.md` **第三轮复验**：复验第二轮 9 条 + **4 条新发现**（N-10…N-13） | ✅ **已完成**——第二轮 9 条全部确认修复；**N-10**（`assign` / `assign-batch` 漏在同权保护之外：副会长可降级同权者，甚至用 `assign` 推翻会长对同权者的移出决定）已修，批量改为逐条判定；N-11 文档限定词、N-12 裸 IPv6 退化注释、N-13 分布式局限说明均已处理 |
-| M9 | **容量基准与四项性能改造**（`docs/capacity-baseline.md`）：新增可复现基准 `server/tests/bench.ps1`（真实 HTTP，可与 `git worktree` 旧提交对比）；排序插入→堆 · PBKDF2 移出锁 · 令牌回收 · 整库落盘移出锁 | ✅ **已完成并验证**：4 并发登录 **1574 → 867 ms**（串行因子 0.99 → 0.56）是唯一有量级收益的一项；排序与落盘在千人档落在噪声内，价值是**最坏情况下界**与**库变大后的锁占用** —— 文档里已如实写明。当前基线 **单测 349 / 冒烟 347 / TLS 22 全绿**（2026-09-15） |
+| M9 | **升级轻舟到 `3ea387e` + 适配 CangDB 缺失的 RBAC 层**：上游 `141a735` 修好 DEF-1 → 本地补丁撤销；框架新增的 `src/store.cj` / `src/rbac.cj` 依赖 CangDB（上游仓只有 README、没有代码）→ 用 `server/src/fw_rbac_store.cj`（文件存储的数据层）+ `fw_rbac.cj`（`requirePermission` 中间件、我们的错误格式）替代，`build.ps1` 排除框架原版 | ✅ **已完成并验证**（提交 `d77c500`）：撤补丁后 TLS 关卡重跑 **22 / 0 全绿**；当轮基线 **单测 322 / 冒烟 347 / TLS 22**。拿得到可用 CangDB 后，删掉两个适配文件、从排除列表去掉 `store.cj` / `rbac.cj` 即可回到上游原版 |
+| M10 | **容量基准与四项性能改造**（`docs/capacity-baseline.md`）：新增可复现基准 `server/tests/bench.ps1`（真实 HTTP，可与 `git worktree` 旧提交对比）；排序插入→堆 · PBKDF2 移出锁 · 令牌回收 · 整库落盘移出锁 | ✅ **已完成并验证**（提交 `f47088f`）：4 并发登录 **1574 → 867 ms**（串行因子 0.99 → 0.56）是唯一有量级收益的一项；排序与落盘在千人档落在噪声内，价值是**最坏情况下界**与**库变大后的锁占用** —— 文档里已如实写明。当轮基线 **单测 349 / 冒烟 347 / TLS 22 全绿**（2026-09-15） |
+| M11 | `docs/code-review.md` **第四轮复验**：6 条新发现（**N-14** 本机判定子串匹配 `::1` → 远程 IPv6 可关停服务 · **N-15** 被 4xx 拒绝却留半改状态并落盘 · **N-16** 登录时序侧信道可枚举手机号 · **N-17** 审计 IO 在锁内 · **N-18** 任务可挂任意部门课题 · **N-19** 招募 token 仅 32 位），另指出 `/admin/shutdown` 缺反例断言 | ✅ **已完成并验证**：6 条全修 + 补 3 组单测闸门与 1 段冒烟闸门。**N-16 时间表：修复前 388/382/431 ms 对 28/29/30 ms（13×），修复后 486/453/453 对 433/484/464（≈1.0×）**。当前基线 **单测 387 / 冒烟 360 / TLS 22 全绿**（2026-09-15） |
 
 **接口进度 39 / 39**：认证 5 · 组织与成员 19 · 任务 8 · 课题 6（= 38 个业务接口）+ 运维 `/health`。
 （早期写「38 / 39」是把 `/health` 漏算了；另有一个不在接口清单里的公开落地页 `GET /join/{token}`。）

@@ -85,18 +85,26 @@ func joinPageHtml(title: String, tip: String): String {
         "</body></html>"
 }
 
-/* 生成不与现有链接冲突的 token（8 个十六进制字符，够短好念）。 */
+/*
+ * 生成不与现有链接冲突的 token（**16 字节 = 32 个十六进制字符**）。
+ *
+ * N-19：原先是 `randHex(4)`（4 字节 = 32 bit），而 `GET /join/{token}` 免认证、
+ * 命中就返回部门名 —— 32 位空间可以枚举（配合并发是小时级）。
+ * 链接本身不免除注册口令（"链接是便利，口令才是准入"），所以危害有限；
+ * 但没必要留这个缺口：与会话令牌（32 字节）同口径更省心。
+ * 重试循环保留（现在第一次必然成功），上限不动。
+ */
 func freshLinkToken(s: Store): String {
     var i: Int64 = 0
     while (i < 64) {
-        let t = randHex(4)
+        let t = randHex(16)
         if (!s.invite_links.contains(t)) {
             return t
         }
         i += 1
     }
     /* 极端情况退化为更长 token，绝不返回重复值 */
-    return randHex(16)
+    return randHex(32)
 }
 
 /* GET /api/v1/dept-invite-links */

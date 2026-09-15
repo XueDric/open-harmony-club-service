@@ -201,7 +201,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1        # 需要时再对比 worktree 旧版
 ```
 
-**当前基线（2026-09-15）：单测 349 / 冒烟 347 / TLS 22，全绿。**
+**当轮基线（2026-09-15，即容量改造那一轮）：单测 349 / 冒烟 347 / TLS 22，全绿。**
+（之后第四轮复验又修了 6 条，现为 387 / 360 / 22 —— 最新数字与跑法见 `README.md` 顶部。）
 
 性能改动的纪律：
 

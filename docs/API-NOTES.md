@@ -1,6 +1,6 @@
 # 服务端 API 事实清单（探针实测）
 
-> 环境：cjc **1.1.3** (cjnative, x86_64-w64-mingw32) + stdx **1.1.3.1** + 轻舟 `1cad35b`（含 DEF-1 本地补丁）
+> 环境：cjc **1.1.3** (cjnative, x86_64-w64-mingw32) + stdx **1.1.3.1** + 轻舟 **`3ea387e`**（DEF-1 已由上游 `141a735` 修复，本地补丁已撤；上游 `src/store.cj` / `src/rbac.cj` 依赖 CangDB，本项目改用 `fw_rbac_store.cj` / `fw_rbac.cj` 适配并在 `build.ps1` 中排除原版）
 > 方法：`.probe/` 下写了 8 轮最小探针逐个编译验证，**只采用实测通过的签名**。
 > 这份清单是为了让后续开发不用重复试错——写代码前先查这里。
 
@@ -117,8 +117,9 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 ```
 
 - 错误链（`compose.cj`）：业务链抛异常 → `ctx.throw_err(e)` → 执行 `onError` 注册的中间件 → 最后 `ctx.commit()`。
-- `serveTls(port, certPem, keyPem)` 收的是 **PEM 字符串**（不是路径），且内部用 `GeneralPrivateKey`
-  （上游修好 DEF-1 后即可去掉本地补丁）。
+- `serveTls(port, certPem, keyPem)` 收的是 **PEM 字符串**（不是路径）。
+  上游 `141a735` 起内部用 `RSAPrivateKey.decodeFromPem`（我们早先那个 `GeneralPrivateKey`
+  的本地补丁已随之撤销，不要再打）。
 
 ---
 

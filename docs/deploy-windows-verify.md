@@ -31,19 +31,19 @@
 | 平台 | Windows x64 |
 | 编译器 | cjc **1.1.3** (cjnative)，`D:\Cangjie` |
 | stdx | **1.1.3.1**，`static` 静态链接进 exe |
-| 轻舟 | `E:\cangjie\qingzhou` @ `1cad35b` **+ 本地 2 行补丁**（见第 4 节） |
-| 编译产物 | `main.exe` (10.70 MB) |
+| 轻舟 | `E:\cangjie\qingzhou` @ **`3ea387e`**（**不需要任何补丁**；原 DEF-1 补丁已随上游 `141a735` 撤销，见第 4 节） |
+| 编译产物 | `club-server.exe`（本文早期写作 `main.exe`，已更名；由 `server\build.ps1` 产出） |
 | 编译命令 | 第 4 节，**本机已实测通过** |
 
 ---
 
-## 2. 部署文件集（**实测**，共 6 个文件 / 约 18.5 MB）
+## 2. 部署文件集（**实测**：exe + 4 个 DLL，证书与启动脚本另计）
 
-我们解析了 `main.exe` 的 PE 导入表，并追到了依赖链末端：
+我们解析了 `club-server.exe` 的 PE 导入表，并追到了依赖链末端：
 
 | 文件 | 体积 | 类型 | 说明 |
 | --- | --- | --- | --- |
-| `main.exe` | 10.70 MB | 应用本体 | |
+| `club-server.exe` | — | 应用本体 | 由 `server\build.ps1` 产出；体积随版本变化（早期称 `main.exe`，10.70 MB） |
 | `libcangjie-runtime.dll` | 1.22 MB | **启动期依赖** | exe 的 PE 导入表直接引用 |
 | `libboundscheck.dll` | 0.04 MB | 传递依赖 | `libcangjie-runtime.dll` 引用 |
 | `libcrypto-3-x64.dll` | 5.54 MB | **运行时 `dlopen`** | 不在导入表里，crypto/TLS 用到时才加载 |
@@ -53,7 +53,7 @@
 ### ⚠️ 对既有文档的两处修正
 
 1. **轻舟技能的部署说明不准确。** 它写「交付物不是单文件 exe，而是 exe + **2** 个 DLL（约 +6.5 MB）」。
-   实测是 **exe + 4 个 DLL，约 18.5 MB**——它**漏了 `libcangjie-runtime.dll` 与 `libboundscheck.dll`**。
+   实测是 **exe + 4 个 DLL，约 18.5 MB**（该次构建的实测值；当前产物由 `build-package.ps1` 给出，约 18.8 MB）——它**漏了 `libcangjie-runtime.dll` 与 `libboundscheck.dll`**。
    只拷那 2 个 OpenSSL DLL 的话，exe 启动时会直接报缺少 `libcangjie-runtime.dll`。
 2. **不需要拷整个运行时目录。** `D:\Cangjie\runtime\lib\windows_x86_64_cjnative` 下有 **51 个 DLL**，
    但根据依赖链，**只需要上面那 2 个**。
@@ -76,47 +76,32 @@
 
 ---
 
-## 4. 本机编译命令（已实测通过）
+## 4. 编译：用 `server\build.ps1`（**不要**手动列文件）
+
+**原来的 DEF-1 补丁已经不需要了**：上游 `141a735`（2026-09-14）修好了同一处，且实现更可移植
+（我们原来用 `GeneralPrivateKey`，上游改用 `RSAPrivateKey.decodeFromPem`）。
+旧补丁文本备份在上层 `cangjie-upstream\` 与 `E:\cangjie\def1-local-patch.patch`，**不要再打**。
+
+**日常构建一律用仓库里的脚本**，它已经处理好全部例外：
 
 ```powershell
-$CJC  = "D:\Cangjie\bin\cjc.exe"
-$STDX = "E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx"
-$ROOT = "E:\cangjie\qingzhou"
-$libs = (Get-ChildItem "$STDX\libstdx*.a" | ForEach-Object { "-l:$($_.Name)" })
-$fw   = Get-ChildItem "$ROOT\src\*.cj" |
-        Where-Object { $_.Name -notin @('unit_tests.cj') } |
-        ForEach-Object { $_.FullName }
-
-& $CJC @fw --import-path $STDX -L $STDX @libs -lcrypt32 -Woff unused `
-       -o "$ROOT\build\main.exe"
+cd server
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+# 产出 build\club-server.exe，并把 4 个依赖 DLL 复制到 build\
 ```
 
-### 必须随代码一起带过去的补丁
+编译轻舟时有**两处例外**（不是改框架源码，而是在我们仓库里提供替代实现）：
 
-轻舟当前发布版本**编译不过**（DEF-1）。本机已应用下面 2 行补丁：
+| 框架文件 | 处置 |
+| --- | --- |
+| `src/store.cj`、`src/rbac.cj` | 上游新版 `import cangdb.*`，而 CangDB 仓库目前**只有 README、没有代码** → **从编译列表里排除**，改用 `server/src/fw_rbac_store.cj`（文件存储的数据层）+ `server/src/fw_rbac.cj`（`requirePermission` 中间件，用我们的错误格式） |
+| 框架自带的入口 / 单测文件 | 与本项目的 `main.cj` / `tests.cj` 冲突 → 同样排除（**完整排除列表见 `server/build.ps1` 顶部**） |
 
-```diff
---- a/src/app.cj
-+++ b/src/app.cj
-@@ -5,6 +5,8 @@ import std.env.*
- import stdx.net.http.*
- import stdx.net.tls.*
- import stdx.crypto.x509.*
-+import stdx.crypto.keys.*
-+import stdx.crypto.common.*
- import stdx.log.*
- import stdx.logger.*
- 
-@@ -64,7 +66,7 @@ public class QingZhouApp {
-     public func serveTls(port: UInt16, certPem: String, keyPem: String): ServerHandle {
-         let certs = X509Certificate.decodeFromPem(certPem)
--        let key = PrivateKey.decodeFromPem(keyPem)
-+        let key: PrivateKey = GeneralPrivateKey.decodeFromPem(keyPem)
-         bootServer(port, Some(TlsServerConfig(certs, key)))
-     }
-```
+拿得到可用的 CangDB 之后：删掉那两个适配文件、从 `build.ps1` 的排除列表里去掉
+`store.cj` / `rbac.cj`，即回到上游原版 —— 见 `HANDOFF.md` §11 的 M9 条目。
 
-**若期间上游已修复，改用上游版本并删除本补丁。**
+> 本文其余部分（依赖链分析、TLS 逐协议验证、公网服务器待办）仍然有效；
+> **构建与运行的权威命令以 `server-guide.md` 为准**。
 
 ---
 
@@ -145,17 +130,18 @@ netsh advfirewall show allprofiles state
 
 ### 步骤 2 · 打包
 
-把第 2 节的 6 个文件打成一个目录（建议 `club-server\`）：
+**现在这一步有脚本了**：`server\build-package.ps1` 直接产出 `server\dist\club-server\`
+（exe + 4 个 DLL + `certs\` + 启动脚本 + 部署说明，约 18.8 MB），整个目录拷到服务器即可。
+手动打包的话，文件集是 **exe + 4 个 DLL**：
 
 ```
 club-server\
-  main.exe
+  club-server.exe
   libcangjie-runtime.dll
   libboundscheck.dll
   libcrypto-3-x64.dll
   libssl-3-x64.dll
-  server.env              # 端口等配置
-  cert.pem  key.pem       # 自签证书（带 SAN，见步骤 5）
+  certs\cert.pem  certs\key.pem    # 自签证书（带 SAN，见步骤 5）
 ```
 
 ### 步骤 3 · 拷到服务器并试跑
@@ -164,7 +150,7 @@ club-server\
 
 ```powershell
 cd club-server
-.\main.exe serve 8443        # 或按轻舟实际入口参数
+.\club-server.exe serve-tls 8443 data certs\cert.pem certs\key.pem
 ```
 
 → **关卡 1、2**

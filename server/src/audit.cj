@@ -38,14 +38,40 @@ func auditSafe(v: String): String {
     return String.fromUtf8(out.toArray())
 }
 
-/* 追加一行审计记录。失败不抛错——审计日志写不进去，不该让业务操作失败。 */
+/*
+ * 记一条审计（**在锁内调用**）：只把这一行挂到 Store 的待写缓冲里，**不做文件 IO**（N-17）。
+ *
+ * 原先这里直接 `File.appendTo`，而所有调用点都持着 `s.lock` —— 与动作 4 刚确立的
+ * "锁内只准备数据、IO 放锁外"口径不一致：同一个提交把 MB 级的整库 IO 挪出了锁，
+ * 却把这一处 append 留在了锁里。现在由请求链末端的 flushPending → auditWrite 落盘，
+ * 时点仍是"同一个请求内、响应发出之前"，因此"响应 200 ⇒ 审计已落盘"不变。
+ *
+ * 清洗（L-9）仍在这里做：note 里会拼进链接 token 之类的外部字符串，
+ * 含换行就能在日志里**伪造出一整条记录**，含制表符能挪动字段边界。
+ */
 public func audit(s: Store, actorId: Int64, action: String, targetId: Int64, note: String): Unit {
+    let line = "${isoLocal(nowEpoch())}\tactor=${actorId}\t${auditSafe(action)}\ttarget=${targetId}\t${auditSafe(note)}\n"
+    s.audit_pending.add(line)
+}
+
+/*
+ * 把缓冲里的审计行追加落盘（**锁外调用**，由 flushPending 调）。
+ * 一次 append 写完一批，既省 open/close，也保证批内顺序与调用顺序一致。
+ * 失败只告警：审计日志写不进去，不该让业务操作失败。
+ */
+public func auditWrite(s: Store, lines: ArrayList<String>): Unit {
+    if (lines.size == 0) {
+        return
+    }
     try {
         if (!exists(s.dir)) {
             Directory.create(s.dir, recursive: true)
         }
-        let line = "${isoLocal(nowEpoch())}\tactor=${actorId}\t${auditSafe(action)}\ttarget=${targetId}\t${auditSafe(note)}\n"
-        File.appendTo("${s.dir}/audit.log", line.toArray())
+        var text = ""
+        for (l in lines) {
+            text += l
+        }
+        File.appendTo("${s.dir}/audit.log", text.toArray())
     } catch (e: Exception) {
         println("[WARN] 审计日志写入失败: ${e.message}")
     }

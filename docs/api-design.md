@@ -252,9 +252,9 @@ can(member, action, target) -> bool
 
 **这意味着 §1.5 的 HTTPS 要求不再需要额外引入 Nginx 即可满足。**
 
-但当前发布版本**编译不过**（缺失 import、且调用了 stdx 1.1.3.1 中未实现的静态方法）。详细缺陷与已验证的补丁见上层 `cangjie-upstream\qingzhou-tls-verification.md`。
+但当时发布版本**编译不过**（缺失 import、且调用了 stdx 1.1.3.1 中未实现的静态方法），缺陷与验证过程见上层 `cangjie-upstream\qingzhou-tls-verification.md`。
 
-**决定：采用框架原生 TLS，不再引入 Nginx。** 已于 2026-09-13 向轻舟团队反馈 DEF-1；上游修复前，开发期打本地补丁。
+**决定：采用框架原生 TLS，不再引入 Nginx。** 已于 2026-09-13 向轻舟团队反馈 DEF-1；**2026-09-14 上游 `141a735` 已修复同一处，本地补丁已撤**，随后实测 TLS 关卡 **22 / 0 全绿**（见 `HANDOFF.md` §11 与 `API-NOTES.md` 的环境说明）。
 
 ## 2.1 账号与成员身份分离（核心模型）
 
@@ -474,10 +474,10 @@ can(member, action, target) -> bool
 | 2 | 注册门槛 | **社团共享注册口令**，会长可随时更换 |
 | 3 | 进部门方式 | **部门招募链接 + 批量分配** |
 | 4 | 账号与授权 | **解耦**：注册后 `pending`，角色全部由会长授予 |
-| 5 | 是否采用框架原生 TLS | **采用**，不再引入 Nginx（依赖轻舟修复 DEF-1） |
+| 5 | 是否采用框架原生 TLS | **采用**，不再引入 Nginx（所依赖的轻舟 DEF-1 **已由上游 `141a735` 修复**，本地补丁已撤） |
 | 6 | MemberBrief 不暴露手机号 | 采用 |
 | 7 | 登录限流阈值 | 同一手机号 15 分钟 5 次失败 |
-| 8 | **首任会长如何预置** | **初始化命令**，例如 `main.exe init-admin <手机号> <初始密码>`。**不采用**"首个注册者自动成为会长" |
+| 8 | **首任会长如何预置** | **初始化命令**，例如 `club-server.exe init-admin <手机号> <初始密码>`。**不采用**"首个注册者自动成为会长" |
 | 9 | 术语 | 定为「**课题**」（沿用甲方表格用词），字段名统一 `plan` |
 | 10 | 课题层级 | **可层层往下分割（多级）**：课题可挂子课题，任务为叶子且不再分层。详见 `v1-scope.md` v0.5 与 Part 5 |
 
@@ -1080,7 +1080,7 @@ Part 3 的接口权限，按如下模型。**这张表细化了 `v1-scope.md` §
 | `owner_id` | ✅ | **且仅一人**——见 4.10 待拍板项 2 |
 | `desc` | — | |
 | `due_at` | — | 可空（进 `no_due` 组） |
-| `plan_id` | — | 可挂到**任意层级**的课题；不挂则为独立任务 |
+| `plan_id` | — | 可挂到**任意层级**的课题；不挂则为独立任务。**课题所属部门必须与任务负责人同部门**（子课题按根课题算），否则 403 `FORBIDDEN_NOT_IN_DEPT`（N-18：否则 A 部门的任务会出现在 B 部门的课题详情里） |
 
 **分配范围校验**：部长 / 副部长只能把任务分配给**本部门成员**；会长 / 副会长可跨部门。
 
@@ -1097,6 +1097,7 @@ Part 3 的接口权限，按如下模型。**这张表细化了 `v1-scope.md` §
 **权限**：创建人 / 部门管理员 / 会长 / 副会长
 
 字段全部可选：`title` / `desc` / `owner_id` / `due_at` / `plan_id`
+（`plan_id` 与 `owner_id` 同样受"负责人与课题必须同部门"约束，见 §4.1 的 `plan_id` 说明）
 
 **改 `owner_id` 就是「转交」**，会更新 `updated_at`。
 
@@ -1625,7 +1626,7 @@ progress(P) =
 | 5 | 角色固定 5 档 | `PATCH /members/{id}`、`POST /members/{id}/assign` |
 | 6 | 人数只做软提示 | `GET /depts` 返回 `member_count`，**不做校验** |
 | 7 | 课题进度递归聚合 | `PlanBrief.progress`（§5.8） |
-| 8 | 任务可不属于课题 | `POST /tasks` 的 `plan_id` 可空 |
+| 8 | 任务可不属于课题 | `POST /tasks` 的 `plan_id` 可空；**挂了课题则课题部门必须与任务负责人同部门**（N-18） |
 | 9 | 删除课题上提一级 | `DELETE /plans/{id}`（§5.7） |
 | 10 | 至少一个 `president` | `PATCH /members/{id}`、`POST /members/{id}/disable`、`transfer-presidency` → `FORBIDDEN_LAST_PRESIDENT` |
 | 11 | 会长移交是原子操作 | `POST /members/{id}/transfer-presidency` |

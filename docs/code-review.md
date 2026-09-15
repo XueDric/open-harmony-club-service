@@ -514,8 +514,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # 复验当时 PASS 325 / FAIL 0
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1 # PASS 22  / FAIL 0
 
-# 2026-09-14 处理完全部 9 条（N-1 / N-5 / N-6 / N-7 / N-9 等）后的**当前基线**：
-#   单测 297 / 冒烟 343 / TLS 22 全绿（数字以 README.md 顶部那三行为准）
+# 2026-09-14 处理完全部 9 条（N-1 / N-5 / N-6 / N-7 / N-9 等）后的**当轮基线**：
+#   单测 297 / 冒烟 343 / TLS 22 全绿（当时的数字以 README.md 顶部那三行为准）
 
 # 独立实例复现（每次用全新数据目录，绝不碰 server\data）
 cd build
@@ -828,4 +828,451 @@ Select-String -Path server\src\h_*.cj -Pattern '(tgt|actor|m)\.(role|status|dept
 若再次出现：请保留完整输出以定位具体条目。附录 B 记录过一次由沙箱引起的 TLS **假阴性**
 （openssl 无法创建 signal pipe、Schannel 挡住 curl），排查时可先比对是否为同类环境因素。
 
-处理完 N-10…N-13 后的**当前基线**：**单测 300 / 冒烟 347 / TLS 22 全绿**（以 `README.md` 顶部为准）。
+处理完 N-10…N-13 后的**当轮基线**：**单测 300 / 冒烟 347 / TLS 22 全绿**（当时以 `README.md` 顶部为准）。
+
+> **本报告之后的进展**（2026-09-14 / 09-15）：轻舟升级到 `3ea387e` 并适配 CangDB 缺失（单测 322）
+> → 容量基准与四项性能改造（**单测 349 / 冒烟 347 / TLS 22**）。
+> 见 `HANDOFF.md` §11.3 的 M9 / M10 两条，性能部分见 **`capacity-baseline.md`**。
+
+---
+
+# 第四轮复验（2026-09-15 · 工作区 `f47088f` + 未提交的文档改动）
+
+> 第三轮之后代码又走了两步：轻舟升级 / CangDB 适配（`d77c500`）与**容量基准 + 四项性能改造**（`f47088f`）。
+> 本部分是针对**当前工作区**的第四轮独立复验。
+>
+> 与前三轮最大的方法差异：本轮先用**编译探针**把可疑函数单独摘出来跑
+> （把真实 `strx.cj` 与一个探针 `main` 同包编译），而不是只读代码、只打 HTTP。
+> 两条"读起来没问题"的判定因此变成了可复现的事实；另有一条要**量响应时间**才看得见，
+> 正面打 HTTP 是看不见的。
+
+| 项 | 值 |
+| --- | --- |
+| 复验对象 | `f47088f`（四项性能改造）及其后的未提交文档改动 |
+| 复验方式 | 重跑三套 → **最小探针编译** → 独立实例打真实 HTTP → 逐条实测到落盘 |
+| 结论 | 前三轮 13 条**未见回退**（间接确认，见 §二）；本轮新发现 **3 条待修**（1 高 / 1 中高 / 1 中）+ **3 条提示**；另指出 **1 处测试缺口** |
+| 复核方改动 | 复验期间**未改动任何产品文件**；探针与临时数据目录已全部删除，`git status` 与复验前一致（本次追加除外） |
+
+## 一、基线（自行重跑）
+
+| 套件 | 提交声明 | **我的实测** |
+| --- | --- | --- |
+| 单测 `club-server.exe test` | 349 / 0 | **PASS 349 / FAIL 0** |
+| HTTP 冒烟 `tests/smoke.ps1` | 347 / 0 | **PASS 347 / FAIL 0** |
+| TLS `tests/tls-check.ps1` | 22 / 0 | 本会话 **PASS 3 / FAIL 3** —— 与**附录 B 逐字同因**的沙箱假阴性（`openssl` 起不来、Schannel 挡住 .NET 客户端），**不是回归**；服务端 TLS 另证正常，见 §五 |
+
+## 二、前三轮的 13 条：间接确认，未逐条重打（如实记录）
+
+本轮**没有**像前三轮那样把 N-1…N-13 逐条用请求重打一遍。做的是间接确认，强度**低于**前三轮：
+
+1. 三套基线与它们一致（`349 / 347`，与 `README.md` 顶部声明相同）；
+2. 核对了"会因回退而变红"的断言仍在，例如 `smoke.ps1:542`（副会长用 `assign` 降级同权副会长 → `403`）
+   与 `smoke.ps1:545`（批量 `assign` 对同权者 → `failed` 记 `FORBIDDEN_ROLE`）——这两条正是 N-10 的回归闸门，
+   它们随冒烟一起通过；
+3. 把 `perms.cj` 的角色分支与 `v1-scope.md` §3.4.3 / `api-design.md` §3.8 的权限矩阵逐行对了一遍，
+   **未发现第三处不一致**（`roleAllows` 不给部长 / 副部长 `SetRole`，与两处文档的「调部门 / 改角色 = —」一致）。
+
+**要重做前三轮那种强度的复验，请照附录 G 的命令重跑。** 本轮的价值在新发现，不在复验。
+
+## 三、本轮新发现
+
+> 这 6 条**都还没修**，所以一律是 `[ ]`。修完请改 `[x]`，并在各条「状态」处补结论与**回退实测**。
+>
+> **修复方回复（2026-09-15）**：6 条**全部已修**，勾选与逐条状态见下。新增闸门后的基线是
+> **单测 387 / 冒烟 360 / TLS 22**（原 349 / 347 / 22）。N-16 的时间表、以及两处闸门
+> **覆盖不到**的边界，见文末 §六。
+
+- [x] N-14 `[高]` **`isLocalPeer` 用子串匹配 `"::1"` → 远程 IPv6 客户端可远程关停服务**
+- [x] N-15 `[中高]` **请求被拒（4xx）但内存已被部分修改、且会落盘**（4 个 handler 同构）
+- [x] N-16 `[中]` **`POST /auth/login` 的时序侧信道可枚举已注册手机号**
+- [x] N-17 `[低]` `audit()` 在持有全局锁时做文件 IO，与动作 4 的"IO 移出锁"口径不一致
+- [x] N-18 `[低]` `handleTaskUpdate` 允许把任务挂到**任意部门**的课题下，部门边界不严
+- [x] N-19 `[提示]` 招募链接 token 仅 32 位，落地页免认证可枚举出部门名
+
+### N-14 `isLocalPeer` 用子串匹配 `"::1"` → 远程 IPv6 可关停服务
+
+**状态**：**已修（2026-09-15）** —— `h_ops.cj` 拆出两个纯函数：`ipOfPeerText` 先剥出地址（方括号 IPv6 / IPv4:port / 裸 IPv6 三种形态），`isLoopbackPeer` 再**按地址相等**比对白名单（`127.0.0.1` / `::1` / 全展开 / IPv4 映射）；`isLocalPeer` 只剩一行转发，且**不再接受 `localhost`**。顺带把 N-12 的"裸 IPv6 退化"一并修掉。
+**回归闸门**：单测 `testLoopbackPeer`（19 条，含 §三那张表的 5 条"远程必须为 false"）。
+**回退实测**：把 `isLoopbackPeer` 改回 `containsAscii(ip, "::1")` → 那 5 条立刻变红。
+⚠️ 边界：单测盯的是这个纯函数；若只把 `isLocalPeer` 改回子串版而纯函数保持正确，单测**不会**红 —— 故 `h_ops.cj` 注释里写明"判定逻辑只能写在 `isLoopbackPeer` 里"。
+**位置**：`server/src/h_ops.cj:93`（`isLocalPeer` 里的 `containsAscii(p, "::1")`）；
+受影响端点 `POST /admin/shutdown`（`main.cj:164`），该端点**没有任何认证**。
+
+`isLocalPeer` 对 `peerOf(ctx)` 的文本做三次 `containsAscii`。而 `containsAscii`（`strx.cj:37`）是**纯子串**搜索，
+IPv6 对端文本又形如 `[地址]:端口` —— 于是**只要地址里出现 `::1` 这三个字符**，就被判为本机。
+
+**实测**（探针 = 真实 `strx.cj` + 一个 `main`，判定表达式与 `isLocalPeer` 逐字相同）：
+
+```
+true   [::1]:5000                    真回环
+true   [127.0.0.1]:5000              真回环
+true   [2001:db8::1]:5000            远程 —— 被误判为本机
+true   [fe80::1a2b:3c4d:5e6f]:5000   远程 —— 被误判为本机
+true   [fd00::1]:5000                远程 —— 被误判为本机
+true   [2001:db8::1000]:5000         远程 —— 被误判为本机
+false  [2001:db8::abcd]:5000         远程（不含 "::1"）
+false  [100.64.0.9]:5000             远程 IPv4
+```
+
+**为什么可稳定利用**：IPv6 的接口标识符由**发起方自己决定**（隐私扩展地址、手工配置都行），
+攻击者挑一个形如 `xxxx::1xxx` 的源地址即可。`h_ops.cj` 的文件头写着
+
+> **必须限制为本机可访问**，否则任何人都能远程关停服务
+
+而这道唯一的防线就是这个子串判断。
+
+**旁证：IPv4 那条是好的。** `containsAscii(p, "127.0.0.1")` 不会误判，因为一个非回环 IPv4 地址的文本
+不可能**包含**完整的 `127.0.0.1`。问题只出在 `::1` 这种**既是完整地址、又是任意地址的子串**的形态上。
+
+**为什么测试没拦住**：`smoke.ps1` §23 的小标题写着"仅本机可访问"，但**只有正例**：
+
+```
+[23] /admin/shutdown 仅本机可访问
+  ok    本机关停 -> 200
+  ok    进程自行退出（无人 kill，说明 shutdown 走完）
+```
+
+没有一条断言"**非本机 → 403**"。这是"标题承诺了反例、测试只给了正例"的又一例。
+
+**修法**
+
+先取出 IP、再按**地址相等**判断，不要对整串做子串搜索：
+
+1. 复用已有的 `clientIpOf`（它已经会剥 `[...]` 与 `:端口`）；
+2. 判 `ip == "127.0.0.1"` 或 `ip == "::1"`，并把 `0:0:0:0:0:0:0:1` 归一化进来；
+3. 更稳的是把地址解析成对象、再问"它是不是回环"（.NET `IPAddress.IsLoopback` 语义）。
+   **Cangjie 侧有没有对应入口需先用探针确认**（本项目纪律：只用实测过的 API，见 `API-NOTES.md`）；
+4. **测试要落在单测而不是冒烟**：`smoke.ps1` 只能从本机发包，造不出"远程 IPv6 对端"。
+   把判定抽成纯函数（如 `isLoopbackPeer(peerText: String): Bool`），在 `tests.cj` 里用上面那张表的字符串直接断言，
+   这样才有一条**在 CI 里跑得动**的闸门。
+
+### N-15 请求被拒（4xx）但内存已被部分修改，且会落盘
+
+**状态**：**已修（2026-09-15）** —— 四处 handler（`h_member` / `h_dept` / `h_task` / `h_plan`）统一改成**两阶段赋值**：阶段一只收集 + 校验（该请求涉及的 `requireAccess` 全部提前），阶段二全部通过后才写活引用。另外按评审给的全路径枚举命令复查了 `h_*.cj` 里**其它**对活引用的赋值点（assign / disable / transfer / reset-password / change-password / move-plan / delete-dept / status），确认它们的 `requireAccess` 与校验都在赋值之前，**没有第二处同形状**。
+**回归闸门**：冒烟 §22.5 —— 4xx 之后 `GET` 到的字段与请求前一致，并触发一次普通写后断言**db.json 里也没有**被拒的值。
+**回退实测**：把任一 handler 改回"边校验边赋值"，对应断言立刻变红（评审 §三的两步实测就是红的样子）。
+**位置**（4 处，同一形状）：
+
+| 文件 | 先写 | 后校验（会抛） |
+| --- | --- | --- |
+| `h_member.cj:148-205` | `tgt.name = nm`（L154） | `requireAccess(SetRole)`（L171）、`role=president` 拒绝（L181） |
+| `h_dept.cj:90-112` | `d.name = nm`（L98） | sort 范围校验（L105） |
+| `h_task.cj:340-383` | `t.title = x`（L345） | `owner_id` 校验（L361-378） |
+| `h_plan.cj:270-305` | `p.title = x`（L275） | `owner_id` 校验（L291-300） |
+
+这些 handler 都是"边校验边赋值"，而 `tgt` / `d` / `t` / `p` 是 `s.members` 等表里的**活引用**。
+后面某个字段校验失败抛异常时，前面写进去的字段**不会回滚**；`storeSave` 没被调用，
+但内存已经脏了 —— **下一个写请求会把整库（含这次"被拒绝"的改动）序列化落盘**。
+
+**实测（两步都实测过）**
+
+```
+before name = '会长'
+PATCH /api/v1/members/1  {"name":"RenamedByARejectedRequest","role":"president"}
+  -> rejected with HTTP 400               （role=president 被 L181-184 拒绝）
+after  name = 'RenamedByARejectedRequest'
+*** 随后触发一次普通写（POST /register-config/rotate），该值出现在 db.json ***
+
+同类第二处：
+before dept#1 name = '主席团'
+PATCH /api/v1/depts/1  {"name":"RenamedDeptByRejectedReq","sort":99999}
+  -> rejected HTTP 400                    （sort 越界被 L105-108 拒绝）
+after  dept#1 name = 'RenamedDeptByRejectedReq'
+```
+
+**后果**（按严重性）
+
+1. **响应与事实相反**：客户端拿到 4xx、提示失败、不刷新，而服务端已经改了。
+2. **不可追溯**：这类路径**走不到 `audit()`**，审计日志里没有痕迹（正常的改名是有记录的）。
+3. **权限边界被"半边生效"侵蚀**：例如"部长改同部门成员的姓名 + 顺手带一个角色字段"——
+   姓名的判定（`EditMemberName`）合法、角色的判定（`SetRole`）不合法，结果是**返回 403 但姓名已改**。
+   单看这一条没有提权，但它打破了"N 个字段要么全生效、要么全不生效"的直觉；
+   将来任何 handler 把**授权字段**写在**未授权字段之后**，就变成真正的越权。
+4. 与 4xx 同源的还有 **500 路径**：收尾代码（如 `memberBrief(s, tgt)`）若抛异常，同样留下半改状态。
+
+**修法（4 处一起改，别只修复现出来的两处）**
+
+两阶段赋值 —— **先收集 → 全部校验 → 再统一落值**：
+
+```
+var nextName: ?String = None
+var nextRole: ?String = None
+var nextDept: ?Int64 = None
+/* 阶段一：只校验，不碰 tgt */
+...
+/* 阶段二：全部通过后，才写 tgt.xxx */
+```
+
+`jsonw.cj:153` 的 `V()` 收集器已经是"一次把字段问题收齐再抛"的形状，**权限判定可以照抄同一个思路**：
+把该请求涉及的**所有** `requireAccess` 提到赋值之前跑完。
+
+改完请补**会因回退而变红**的断言，且要断言到落盘：「4xx 之后 `GET` 到的字段与请求前一致」
+（`members` / `depts` 各一条）+「`db.json` 里也一致」。
+
+### N-16 `POST /auth/login` 时序侧信道可枚举已注册手机号
+
+**状态**：**已修（2026-09-15）** —— `auth.cj` 新增纯函数 `loginCreds(found, salt, hash, iter)`：号码不存在时返回**假盐 / 假摘要（模块级常量）+ 标准迭代数**；`handleLogin` 的 ② 段改成无条件 `verifyPw(pw, creds[0], creds[1], creds[2]) && found`，两条路径的 PBKDF2 计算量因此一致。
+**回归闸门**：单测 `testLoginCreds`（10 条：假材料非空、不泄露真实材料、迭代数取标准值、假材料能真的走完 PBKDF2）。
+**回退实测**：把 `loginCreds` 的不存在分支改回返回空材料 / 0 迭代 → 立刻变红。
+**真实判据是时间表**（见 §6.2）：修复后 486/453/453 ms 对 433/484/464 ms，即 13× 的差已收敛到 ≈1.0×。
+⚠️ 边界：与 N-14 同理，单测盯的是材料选择函数；只改 `handleLogin` 调用点不会让单测红。
+**位置**：`server/src/h_auth.cj:294-298`（`handleLogin` 第 ② 段）
+
+```
+var ok = false
+if (found) {
+    ok = verifyPw(pw, credSalt, credHash, credIter)   // ← 只有号码存在才跑
+}
+```
+
+号码不存在时整段 PBKDF2 被跳过，两条路径的**响应时间差约 13 倍**。
+
+**实测（同一实例连续打）**
+
+| 场景 | 第 1 次 | 第 2 次 | 第 3 次 |
+| --- | --- | --- | --- |
+| 已注册号码 + 错口令 | 388 ms | 382 ms | 431 ms |
+| 未注册号码 | 28 ms | 29 ms | 30 ms |
+
+**与代码自己的注释直接矛盾**：`h_auth.cj:304` 写着
+
+> 手机号不存在与口令错误走同一条路：**不泄露某个号码是否注册过**
+
+错误码确实统一了，**但时间没有**。而 `v1-scope.md` 把"社团里有哪些人"当作本工具要回答的第一个问题——
+"哪些手机号是社团成员"正是要保护的那类信息。
+
+**注**：这是**动作 2（PBKDF2 移出全局锁）的副作用被放大**。三段式改造只是搬动了位置，
+`if (found)` 这个短路被完整保留下来，所以严格说它是**既有问题**，只是这次才有人去**量时间**。
+
+**修法**
+
+号码不存在时也走一次**等价成本**的 PBKDF2（对固定的假盐 / 假摘要算，结果丢弃）：
+
+```
+/* 号码不存在也照样算一次，把两条路径的时间拉平 */
+let salt = if (found) { credSalt } else { DUMMY_SALT }
+let hash = if (found) { credHash } else { DUMMY_HASH }
+let iter = if (found) { credIter } else { PBKDF2_ITER }
+let ok = found && verifyPw(pw, salt, hash, iter)
+```
+
+`DUMMY_SALT` / `DUMMY_HASH` 用模块级常量（进程内固定即可）。
+**验证方式不是"断言通过"，而是重跑上面那张时间表**：两条路径的中位数应落到同一量级。
+自动化断言只适合做弱形式（如"号码不存在时也调用了 PBKDF2"），
+"时间相等"本身会 flaky，不要写进测试。
+
+### N-17 `audit()` 在持有全局锁时做文件 IO
+
+**状态**：**已修（2026-09-15）** —— 选了"先写内存缓冲、再批量落盘"这条：`Store` 新增内存字段 `audit_pending`，`audit()` 只 append 一行到缓冲（**锁内不做 IO**），由请求链末端的 `flushPending` 在**解锁之后**调 `auditWrite` 一次写完一批。时点仍是"同一请求内、响应发出之前"，所以"响应 200 ⇒ 审计已落盘"不变；清洗（L-9）仍在 `audit()` 里做。
+**回归闸门**：单测 `testAuditDeferred`（9 条：audit() 后文件不存在 → flush 后才出现 → 缓冲清空 → 注入的换行没伪造出第二条 → `audit_pending` 不进 db.json）。
+**回退实测**：把 `audit()` 改回直接 `File.appendTo` → "audit() 没有立刻写文件"立刻变红。
+**位置**：`server/src/audit.cj:42-52`；调用点全部在 `s.lock` 内 ——
+`h_member.cj:247,298,301,390,440`、`h_dept.cj:166`、`h_secret.cj:87,133,150`、
+`h_plan.cj:416,457`、`h_link.cj:181`
+
+`audit()` 每次都 `File.appendTo(...)`（open → write → close），而它被调用时**持着全局锁**。
+这与 `f47088f` 刚刚确立的口径（"整库落盘移出锁，锁内只做序列化"）**不一致**：
+同一个提交把 MB 级的 IO 挪出了锁，却把另一处 IO 留在了锁里。
+
+量级上它远小于整库落盘（一行 append），所以定级为低。但"锁内不做 IO"既然已经立成纪律，
+这里要么改成与 `storeSave` 同样的"挂到请求链末端"，要么先写内存缓冲、再批量落盘。
+
+**如果决定不改，请在 `audit.cj` 注释里写明**"这处 IO 是有意留在锁内的，因为它足够小且要求强顺序"——
+**留一个例外而不说明，正是 N-5 那类"例外只存在于代码里"的复发。**
+
+### N-18 `handleTaskUpdate` 允许把任务挂到任意部门的课题下
+
+**状态**：**已修（2026-09-15）** —— 按评审"先落口径再改代码"的顺序：先在 `api-design.md` §4.1 的 `plan_id` 字段说明里写明"**课题所属部门必须与任务负责人同部门**"，再在 `handleTaskCreate` / `handleTaskUpdate` 补校验（用 `planDeptOf`，子课题按根课题的部门算）。更新路径按**结果状态**判定（`nextOwner` 与 `nextPlan` 的合成结果），且只在动到 owner / plan 这两个字段时检查 —— 这样历史数据本来不一致时，连改名也不会被误挡。
+**回归闸门**：冒烟 §22.5 —— 创建与修改两条路径的跨部门挂课题都必须 403 `FORBIDDEN_NOT_IN_DEPT`；同部门挂载的正例由 §20 那批"课题下建任务"承担（部门一致，必须继续 201）。
+**回退实测**：删掉那两处 `planDeptOf` 比较 → 两条 403 断言立刻变红（评审的 `h_task.cj:287/384` 定位就是红的样子）。
+**位置**：`h_task.cj:384-395`（`handleTaskUpdate` 的 `plan_id` 分支）、`h_task.cj:287-292`（`handleTaskCreate`）
+
+两处都只校验"课题存在"，**不校验课题的部门与任务的部门一致**。而：
+
+- `Plan.dept_id` 只存在顶层，子课题的部门由根决定（`planDeptOf`，规则 19）；
+- `handlePlanDetail`（`h_plan.cj:112-124`）列本级任务时**不再逐条 `can()`** ——
+  它的前提是"能看到课题 ⇒ 能看到它的任务"。
+
+于是 **A 部门的部长可以把自己部门的任务挂进 B 部门的课题**，B 部门的人在课题详情里
+就能读到该任务的标题 / 负责人 / 截止时间。操作者处置的是自己部门的任务，所以不是越权**写**，
+但它是**跨部门的信息可见性** —— 而本项目把"部门边界"当作核心隔离维度（整份权限矩阵都建在它上面）。
+
+**修法（二选一，建议前者）**
+
+1. `planId > 0` 时补一条判定：`planDeptOf(s, planId) == owner.dept_id`，
+   不一致返回 `FORBIDDEN_NOT_IN_DEPT`（或再跑一次 `requireAccess`，按课题部门判）；
+2. 若产品上确实要允许跨部门挂课题，则反过来给 `handlePlanDetail` 的任务列表补回逐条 `can()`。
+
+`api-design.md` 只写了 `plan_id` "可挂到任意层级的课题"，**没说部门**。
+按仓库规律，这类口径应**先落回 `api-design.md` 再改代码**。
+
+### N-19 招募链接 token 仅 32 位
+
+**状态**：**已修（2026-09-15）** —— `freshLinkToken` 的 `randHex(4)` 改成 `randHex(16)`（32 位十六进制，与会话令牌同口径）；重试循环与上限按评审建议不动，退化分支改 `randHex(32)`。
+**回归闸门**：冒烟 §14 的 token 长度断言（**原断言写的是"8 位"，等于把缺陷固化成了期望，已一并改为 32**）。
+**回退实测**：改回 `randHex(4)` → 该断言立刻变红。
+**位置**：`h_link.cj:92`（`randHex(4)`）、`h_link.cj:39-69`（`GET /join/{token}` 免认证）
+
+招募链接 token 是 4 字节 = 8 个十六进制字符（**32 bit**），而会话令牌是 32 字节。
+`/join/{token}` 不需要登录，命中就返回部门名，32 位空间**可枚举**（4.3e9，配合并发是小时级）。
+
+实际危害有限：链接**不免除注册口令**（`h_link.cj` 文件头写明"链接是便利，口令才是准入"），
+枚举出的 token 不能直接进社团。故定为提示。
+
+建议：`randHex(4)` → 至少 `randHex(16)`，与其它 token 口径统一；`freshLinkToken` 的重试上限可不动。
+
+## 四、测试缺口（一条，值得单列）
+
+**`/admin/shutdown` 缺反例断言** —— N-14 正是从这里逃逸的。
+
+§23 的标题是"仅本机可访问"，断言却只有一条正例。补反例的难处在于 `smoke.ps1` 只能从本机发包、
+造不出"远程 IPv6 对端"。**所以不要把这条只挂在冒烟上**：把判定抽成纯函数
+（`isLoopbackPeer(peerText: String): Bool`），用 `tests.cj` 覆盖 §三那张表 ——
+单测跑得动，也不依赖网络环境。
+
+这与前几轮的模式一致：**"一个能力只测了一条实现路径" / "标题承诺了反例、测试只给正例"，
+是 H-1 与 N-10 的同一个根因。**
+
+**修复方回复（2026-09-15）**：已按这条落地 —— `h_ops.cj` 抽出 `isLoopbackPeer(peerText)`，
+`tests.cj` 的 `testLoopbackPeer` 覆盖 §三那张表的全部输入（含 5 条"远程必须为 false"），
+并把 `ipOfPeerText` 的三种形态一起断言。冒烟侧**仍然只有正例**（物理限制没变：本机发不出远程 IPv6 包）。
+
+> 同一模式的**镜像**也被抓到一处：`smoke.ps1:613` 把 N-19 的缺陷（token 只有 8 位）
+> **写成了期望值**，于是"测试全绿"反而挡住了修复。见 §6.5。
+
+## 五、本轮未覆盖，以及再次踩到的 TLS 沙箱假阴性
+
+| 项 | 说明 |
+| --- | --- |
+| 客户端 ArkTS 构建 | 未跑 `hvigorw assembleHap`；页面仍是假数据、未接接口（`README.md` 已列为已知待办） |
+| 并发 / 压力 | 沿用 `capacity-baseline.md` 的结论，本轮未复测 |
+| 前三轮 13 条逐条重打 | 本轮只做间接确认，见 §二 |
+| TLS 正向验证 | 受沙箱限制未能在本会话重跑 `PASS 22`；服务端侧已另证（见下） |
+
+**关于 TLS：本轮**再次**踩到附录 B 记录过的同一环境误判。**
+
+`tests/tls-check.ps1` 得 `PASS 3 / FAIL 3`（两条 SAN 断言失败 + 服务就绪探测超时）。逐项归因后，
+确认与**附录 B 逐字同因**：
+
+1. `openssl.exe` 启动即 `couldn't create signal pipe, Win32 error 5`（沙箱禁止 MSYS 程序建 signal pipe）；
+2. .NET `SslStream` / `Invoke-WebRequest` 被 Schannel 挡住：
+   `No credentials are available in the security package`。
+
+用三条旁证确认**服务端 TLS 没问题**（第 3 条是本次新增，比附录 B 的旁证更硬）：
+
+1. .NET 直读证书：`NotAfter = 2036-09-10`、`SigAlg = sha256RSA`、
+   SAN = `IP Address=127.0.0.1, DNS Name=localhost, IP Address=0:0:0:0:0:0:0:1`；
+2. 服务端确实在监听：`netstat` 显示 `LISTENING`，裸 TCP 连接成功；
+3. **手工构造 TLS ClientHello 打过去**：
+
+```
+TLS_RSA_WITH_AES_128_CBC_SHA (0x002F)
+    -> Alert handshake_failure(40)     ← 现代 OpenSSL 禁用 RSA 密钥交换，这是**正确**行为
+ECDHE-RSA-AES128-GCM-SHA256 (0xC02F) + signature_algorithms / supported_groups / EMS
+    -> ServerHello (16 03 03 ...)      ← 服务端 TLS 栈工作正常
+```
+
+第 3 条只依赖裸 socket，**不受 Schannel 与 openssl 影响**，能直接区分"服务端坏了"与"客户端被挡了"。
+建议把这段收进 `tests/`（或直接补进 `tls-check.ps1` 的就绪探测），
+下次再遇到沙箱假阴性就不必重新推导。
+
+## 附录 G · 第四轮复现命令
+
+```powershell
+cd server
+Remove-Item build\club-server.exe -Force -ErrorAction SilentlyContinue
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+.\build\club-server.exe test                                              # PASS 349 / FAIL 0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # PASS 347 / FAIL 0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1 # 沙箱内 3/3，见 §五
+
+# ---- N-14：把真实 strx.cj 与一个探针 main 同包编译 ----
+#   判定表达式与 isLocalPeer 逐字相同：containsAscii(peer, "::1")
+#   [::1] / [2001:db8::1] / [fe80::1a2b:3c4d:5e6f] / [fd00::1] / [2001:db8::1000] 全为 true
+
+# ---- N-15：被拒请求仍改内存、且会落盘 ----
+cd build
+.\club-server.exe init-admin 13800000000 reviewpw123 review-data
+.\club-server.exe serve 18099 review-data
+# 取令牌后：
+#   PATCH /api/v1/members/1  {"name":"RenamedByARejectedRequest","role":"president"}   -> 400
+#   GET   /api/v1/members/1  -> name 已变成 RenamedByARejectedRequest
+#   POST  /api/v1/register-config/rotate            （触发一次普通落盘）
+#   查 review-data\db.json -> 该名字已在文件里
+#   PATCH /api/v1/depts/1    {"name":"RenamedDeptByRejectedReq","sort":99999}           -> 400，但部门名已改
+
+# ---- N-16：登录时序侧信道（同一实例连续打，看量级差） ----
+#   已注册号码 + 错口令  -> 388 / 382 / 431 ms
+#   未注册号码          ->  28 /  29 /  30 ms
+```
+
+**N-15 的全路径枚举命令**（比只修复现出来的两处可靠）：
+
+```powershell
+Select-String -Path server\src\h_*.cj -Pattern '^\s*(tgt|d|t|p|cur)\.\w+\s*=' -Encoding UTF8
+```
+
+**N-14 的同路径枚举命令**（把"对端文本"当判定依据的地方都找出来）：
+
+```powershell
+Select-String -Path server\src\*.cj -Pattern 'peerOf|clientIpOf|containsAscii|isLocalPeer' -Encoding UTF8
+```
+
+---
+
+# 修复方回复（2026-09-15 · 针对第四轮）
+
+## 6.1 六条的处理
+
+| 条 | 定级 | 处置 | 回归闸门（回退即变红） |
+| --- | --- | --- | --- |
+| N-14 | 高 | `h_ops.cj` 拆出 `ipOfPeerText`（剥地址）+ `isLoopbackPeer`（**按地址相等**比白名单），`isLocalPeer` 只剩一行转发；不再接受 `localhost`。顺带修掉 N-12 | 单测 `testLoopbackPeer`（19 条，含 §三那张表的 5 条"远程必须 false"） |
+| N-15 | 中高 | `h_member` / `h_dept` / `h_task` / `h_plan` 改**两阶段**：阶段一只收集+校验（`requireAccess` 全部提前），阶段二统一落值；并按评审命令复查了其它同形状点 | 冒烟 §22.5：4xx 后 `GET` 到的字段未变 + **db.json 里也没有**被拒的值 |
+| N-16 | 中 | `auth.cj` 加 `loginCreds(...)`：号码不存在时给**假材料 + 标准迭代数**，`handleLogin` 无条件跑等价 PBKDF2 | 单测 `testLoginCreds`；真实判据是 §6.2 的时间表 |
+| N-17 | 低 | `audit()` 只挂内存缓冲（`Store.audit_pending`），`flushPending`（解锁后）批量 `auditWrite` | 单测 `testAuditDeferred`（9 条） |
+| N-18 | 低 | 先落口径（`api-design.md` §4.1），再在创建/修改两处校验"负责人与课题同部门"，更新路径按**结果状态**判定 | 冒烟 §22.5：两条路径均 403 `FORBIDDEN_NOT_IN_DEPT` |
+| N-19 | 提示 | `randHex(4)` → `randHex(16)`（32 位十六进制，与会话令牌同口径） | 冒烟 §14：token 长度 == 32（原断言写的是 8 位，已一并更新） |
+
+## 6.2 N-16 的时间表（同一实例连续打，修复后实测）
+
+| 场景 | 第 1 次 | 第 2 次 | 第 3 次 |
+| --- | --- | --- | --- |
+| 已注册号码 + 错口令 | 486 ms | 453 ms | 453 ms |
+| 未注册号码 | 433 ms | 484 ms | 464 ms |
+
+修复前是 388 / 382 / 431 对 28 / 29 / 30（约 **13×**）。现在两条路径同一量级（**≈1.0×**）。
+
+## 6.3 两处闸门**覆盖不到**的地方（别误以为单测全覆盖）
+
+`testLoopbackPeer` 盯的是纯函数 `isLoopbackPeer`，`testLoginCreds` 盯的是纯函数 `loginCreds`。
+如果**只**把 `isLocalPeer`（一行转发）或 `handleLogin` 的调用点改回旧写法、而纯函数保持正确，
+这两个单测**不会变红**。为此做了两件事：`h_ops.cj` 注释里写明"判定逻辑只能写在 `isLoopbackPeer` 里"；
+N-16 的真实判据定为 §6.2 的时间表（跑一次就能看出来），而不是断言 —— 时间相等本身会 flaky。
+
+要端到端的闸门，只能靠"远程 IPv6 对端"与"响应时间"，两者在 CI 里都不稳定，故按评审建议：
+**反例落在单测、时间表落在人工复测**。
+
+## 6.4 修复后的基线
+
+| 套件 | 复验时（评审） | 修复后 |
+| --- | --- | --- |
+| 单测 | 349 / 0 | **387 / 0**（+38：本机判定 19 · 登录材料 10 · 审计缓冲 9） |
+| 冒烟 | 347 / 0 | **360 / 0**（+13：§22.5 十一条 + 两处改动） |
+| TLS | 3 / 3（沙箱假阴性） | **22 / 0**（本机全权限下重跑；服务端侧结论与评审 §五 一致） |
+
+## 6.5 顺带发现的两处（同一根因，已一并处理）
+
+1. **`smoke.ps1` 把 N-19 的缺陷写成了期望值**：`Check "返回 token（8 位）"` 断言 token 恰好 8 位 ——
+   "测试全绿"因此反而挡住了修复。已改为 32 位。这是"标题承诺了反例、测试只给正例"的**镜像**：
+   此处是**把缺陷固化成了期望**，比缺断言更隐蔽。
+2. **`h_ops.cj` 里 N-12 的注释已过期**：裸 IPv6 的"退化为全局桶"随本次重构消失（现在按冒号个数
+   判断，整串即地址），注释已重写。
+
+## 6.6 本轮**有意未做**的一条
+
+评审 §五 建议把"手工构造 TLS ClientHello 打过去"（裸 socket，不受 Schannel / openssl 影响）
+收进 `tests/`，用于区分"服务端 TLS 坏了"与"客户端被沙箱挡住了"。
+
+**本轮没做**：本机是全权限环境，`tls-check.ps1` 直接 **22 / 0**，
+那条探针只在受限沙箱下才有用武之地。留着作为待办 —— 下次再遇到假阴性时按评审 §五 的三步照做即可
+（结论已写进该节，不必重新推导）。

@@ -267,21 +267,22 @@ public func handlePlanUpdate(ctx: Context, s: Store): Unit {
                 oneField("dept_id", "部门由所属根课题决定，不能通过本接口修改"))
         }
         var touched = false
+        /* ---------- 阶段一：只收集 + 校验，**绝不碰 p**（N-15） ---------- */
+        var nextTitle: ?String = None
         match (jsonGetStr(body, "title")) {
             case Some(x) =>
                 if (isBlank(x)) {
                     throw apiErrFields("VALIDATION_FAILED", "参数校验失败", oneField("title", "课题名称不能为空"))
                 }
-                p.title = x
-                touched = true
+                nextTitle = Some(x)
             case None => ()
         }
+        var nextDesc: ?String = None
         match (jsonGetStr(body, "desc")) {
-            case Some(x) =>
-                p.desc = x
-                touched = true
+            case Some(x) => nextDesc = Some(x)
             case None => ()
         }
+        var nextOwner: ?Int64 = None
         match (jsonGetInt64(body, "owner_id")) {
             case Some(oid) =>
                 if (oid <= 0) {
@@ -299,12 +300,37 @@ public func handlePlanUpdate(ctx: Context, s: Store): Unit {
                         }
                     case None => throw apiErr("MEMBER_NOT_FOUND")
                 }
+                nextOwner = Some(oid)
+            case None => ()
+        }
+        var dueGiven = false
+        var dueVal: Int64 = 0
+        if (body.containsKey("due_at")) {
+            dueVal = reqTime(body, "due_at")
+            dueGiven = true
+        }
+
+        /* ---------- 阶段二：全部通过之后才落值（N-15） ---------- */
+        match (nextTitle) {
+            case Some(x) =>
+                p.title = x
+                touched = true
+            case None => ()
+        }
+        match (nextDesc) {
+            case Some(x) =>
+                p.desc = x
+                touched = true
+            case None => ()
+        }
+        match (nextOwner) {
+            case Some(oid) =>
                 p.owner_id = oid
                 touched = true
             case None => ()
         }
-        if (body.containsKey("due_at")) {
-            p.due_at = reqTime(body, "due_at")
+        if (dueGiven) {
+            p.due_at = dueVal
             touched = true
         }
         if (touched) {

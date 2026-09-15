@@ -1482,6 +1482,107 @@ func testSortEdge(t: TR): Unit {
     t.eqi("空数组返回空", sortedTasksByDue(ArrayList<Task>()).size, 0)
 }
 
+/*
+ * N-14：本机判定的回归闸门。
+ *
+ * 用纯函数 `isLoopbackPeer` 覆盖各种对端文本 —— 冒烟测试只能从本机发包，
+ * 造不出"远程 IPv6 对端"，所以**反例只能落在单测里**（第四轮评测 §四专门指出
+ * /admin/shutdown 只有正例，N-14 正是从这里逃逸的）。
+ * 下面"不是本机"那几条正是老实现（`containsAscii(p, "::1")`）会误判的输入。
+ */
+func testLoopbackPeer(t: TR): Unit {
+    println("- 本机判定（N-14）")
+    /* 真回环：各种写法都要放行 */
+    t.ok("[::1]:5000 是本机", isLoopbackPeer("[::1]:5000"))
+    t.ok("[127.0.0.1]:5000 是本机", isLoopbackPeer("[127.0.0.1]:5000"))
+    t.ok("127.0.0.1:5000 是本机", isLoopbackPeer("127.0.0.1:5000"))
+    t.ok("裸 ::1 是本机", isLoopbackPeer("::1"))
+    t.ok("[0:0:0:0:0:0:0:1]:5000 是本机（全展开）", isLoopbackPeer("[0:0:0:0:0:0:0:1]:5000"))
+    t.ok("[::ffff:127.0.0.1]:5000 是本机（IPv4 映射）", isLoopbackPeer("[::ffff:127.0.0.1]:5000"))
+
+    /* 远程 —— 这些在"子串匹配 ::1"的老实现下**全部为 true**（N-14 的漏洞面） */
+    t.ok("[2001:db8::1]:5000 不是本机", !isLoopbackPeer("[2001:db8::1]:5000"))
+    t.ok("[fe80::1a2b:3c4d:5e6f]:5000 不是本机", !isLoopbackPeer("[fe80::1a2b:3c4d:5e6f]:5000"))
+    t.ok("[fd00::1]:5000 不是本机", !isLoopbackPeer("[fd00::1]:5000"))
+    t.ok("[2001:db8::1000]:5000 不是本机", !isLoopbackPeer("[2001:db8::1000]:5000"))
+    t.ok("[2001:db8::abcd]:5000 不是本机", !isLoopbackPeer("[2001:db8::abcd]:5000"))
+    t.ok("100.64.0.9:5000 不是本机", !isLoopbackPeer("100.64.0.9:5000"))
+    t.ok("空串不是本机", !isLoopbackPeer(""))
+    t.ok("localhost 不再被当作本机（socket 对端是地址，不是主机名）", !isLoopbackPeer("localhost:5000"))
+
+    /* 顺带盯住 N-12：裸 IPv6 不再被切成 ":" 之类的垃圾 key */
+    t.eqs("裸 IPv6 整串即地址", ipOfPeerText("::1"), "::1")
+    t.eqs("方括号 IPv6 取括号内", ipOfPeerText("[2001:db8::1]:5000"), "2001:db8::1")
+    t.eqs("IPv4 带端口切掉端口", ipOfPeerText("127.0.0.1:14764"), "127.0.0.1")
+    t.eqs("裸 IPv4 原样返回", ipOfPeerText("10.0.0.7"), "10.0.0.7")
+    t.eqs("空串原样返回空", ipOfPeerText(""), "")
+}
+
+/*
+ * N-16：登录材料选择的回归闸门。
+ *
+ * 手机号不存在时也必须拿到**等价成本**的材料。一旦有人改回"不存在就跳过 PBKDF2"，
+ * 返回值会退化成空串 / 0 次迭代，这里立刻变红。
+ * （"响应时间相等"本身会 flaky，不写进测试；时间表靠手工复测，见 code-review 第四轮。）
+ */
+func testLoginCreds(t: TR): Unit {
+    println("- 登录口令材料（N-16）")
+    let real = loginCreds(true, "aabbccdd", "eeff0011", 100000)
+    t.eqs("号码存在：用真实盐", real[0], "aabbccdd")
+    t.eqs("号码存在：用真实摘要", real[1], "eeff0011")
+    t.eqi("号码存在：用真实迭代数", real[2], 100000)
+
+    let dummy = loginCreds(false, "aabbccdd", "eeff0011", 1)
+    t.ok("号码不存在：盐非空（会真的算）", dummy[0].size > 0)
+    t.ok("号码不存在：摘要非空", dummy[1].size > 0)
+    t.ok("号码不存在：不泄露真实盐", dummy[0] != "aabbccdd")
+    t.ok("号码不存在：不泄露真实摘要", dummy[1] != "eeff0011")
+    t.eqi("号码不存在：迭代数取标准值", dummy[2], PBKDF2_ITER)
+    t.eqi("两条路径迭代数相同（成本等价）", dummy[2], real[2])
+    /* 弱形式：假材料格式合法，能真正走完一遍 PBKDF2（不会因格式错误提前返回） */
+    t.ok("假材料能走完 PBKDF2（口令不匹配）", !verifyPw("whatever123", dummy[0], dummy[1], dummy[2]))
+}
+
+/*
+ * N-17：审计行"锁内只挂缓冲、锁外才落盘"的回归闸门。
+ * audit() 不碰磁盘；flushPending()（请求链末端、已解锁）才 append。
+ */
+func testAuditDeferred(t: TR): Unit {
+    println("- 审计行锁外落盘（N-17）")
+    let dir = "build/test-data-audit"
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+    let s = Store(dir)
+    audit(s, 1, "reset-password", 2, "note\twith\ttabs\nand-a-forged-line")
+    t.eqi("audit() 只挂缓冲", s.audit_pending.size, 1)
+    t.ok("audit() 没有立刻写文件（锁内不做 IO）", !exists("${dir}/audit.log"))
+
+    flushPending(s)
+    t.ok("flushPending 之后审计落盘", exists("${dir}/audit.log"))
+    t.eqi("缓冲已清空", s.audit_pending.size, 0)
+    let text = String.fromUtf8(File.readFrom("${dir}/audit.log"))
+    t.ok("含动作名", containsAscii(text, "reset-password"))
+    t.ok("含 target", containsAscii(text, "target=2"))
+    var nl = 0
+    for (b in text.toArray()) {
+        if (b == 10) {
+            nl += 1
+        }
+    }
+    t.eqi("注入的换行没伪造出第二条记录（L-9 仍生效）", nl, 1)
+    t.ok("制表符被替换成空格", !containsAscii(text, "note\twith"))
+
+    /* 审计缓冲是内存态，绝不能进 db.json */
+    storeSaveNow(s)
+    let db = String.fromUtf8(File.readFrom(s.dbFile()))
+    t.ok("audit_pending 不落盘", !containsAscii(db, "audit_pending"))
+
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+}
+
 /* ===================== 入口 ===================== */
 
 public func runTests(): Int64 {
@@ -1495,6 +1596,9 @@ public func runTests(): Int64 {
     testDeferredSave(t)
     testTokenPrune(t)
     testSortEdge(t)
+    testLoopbackPeer(t)
+    testLoginCreds(t)
+    testAuditDeferred(t)
     testPerms(t)
     testRegThrottle(t)
     testRbacAdaptation(t)

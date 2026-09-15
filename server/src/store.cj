@@ -152,6 +152,14 @@ public class Store {
      * 拿不到对端地址时 key 为空串，退化为全局锁——总比完全不锁好。 */
     public var reg_fail: HashMap<String, RegFail> = HashMap<String, RegFail>()
 
+    /*
+     * N-17：待写审计行（**只存在内存里，不落盘**）。
+     * audit() 是在锁内被调用的，那时不能做文件 IO —— 与动作 4 确立的
+     * "锁内只准备数据、IO 放锁外"同一口径。真正的 append 由请求链末端的
+     * snapshotFlush 中间件（解锁后）调用 auditWrite 完成。
+     */
+    public var audit_pending: ArrayList<String> = ArrayList<String>()
+
     public var next_dept: Int64 = 1
     public var next_member: Int64 = 1
     public var next_plan: Int64 = 1
@@ -662,8 +670,29 @@ public func storeSaveNow(s: Store): Unit {
     writeSnapshot(s, storeSnapshot(s))
 }
 
-/* 把待落盘快照写出去（幂等）：没有待写快照时是空操作。 */
+/*
+ * 把待落盘的东西写出去（幂等）：审计行 + 整库快照；没有待写内容时是空操作。
+ *
+ * 两件事都在**解锁之后**做（调用方是请求链末端的 snapshotFlush 中间件）：
+ *   · 审计行（N-17）：原先在锁内 `File.appendTo`，与动作 4 的口径不一致；
+ *   · 整库快照（动作 4）：见 storeSave 的注释。
+ * 顺序是先审计、后快照：即便快照被序号守卫跳过，审计行也已经落地。
+ */
 public func flushPending(s: Store): Unit {
+    /* 1) 取走待写审计行 —— 只为了搬动数组，短暂持全局锁（加锁顺序与别处一致） */
+    var auditLines = ArrayList<String>()
+    s.lock.lock()
+    try {
+        if (s.audit_pending.size > 0) {
+            auditLines = s.audit_pending
+            s.audit_pending = ArrayList<String>()
+        }
+    } finally {
+        s.lock.unlock()
+    }
+    auditWrite(s, auditLines)
+
+    /* 2) 取走待写快照（在 save_lock 内），再锁外写盘 */
     var take: ?Snapshot = None
     s.save_lock.lock()
     try {

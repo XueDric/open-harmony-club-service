@@ -289,6 +289,17 @@ public func handleTaskCreate(ctx: Context, s: Store): Unit {
                 case Some(_) => ()
                 case None => throw apiErr("PLAN_NOT_FOUND")
             }
+            /*
+             * N-18（部门边界）：任务的**负责人**必须与课题同部门。
+             * 原实现只校验"课题存在"，于是 A 部门的部长能把自己部门的任务挂进 B 部门的课题，
+             * 而 handlePlanDetail 列本级任务时不再逐条 can()（前提是"能看课题就能看它的任务"），
+             * B 部门的人因此在课题详情里读到了这个任务 —— 跨部门的信息可见性。
+             * 口径已先落回 api-design.md §4.1（「任务创建」的 plan_id 字段说明）。
+             */
+            let planDept = planDeptOf(s, planId)
+            if (planDept > 0 && planDept != owner.dept_id) {
+                throw apiErrMsg("FORBIDDEN_NOT_IN_DEPT", "课题属于其它部门，不能把任务挂到跨部门的课题下")
+            }
         }
 
         let t = Task()
@@ -337,21 +348,24 @@ public func handleTaskUpdate(ctx: Context, s: Store): Unit {
         requireAccess(actor, Action.EditTask, targetOfTask(actor, t))
         var touched = false
 
+        /* ---------- 阶段一：只收集 + 校验，**绝不碰 t**（N-15） ----------
+         * t 是 s.tasks 里的活引用，"边校验边赋值"会让被 4xx 拒绝的请求留下半改状态。 */
+        var nextTitle: ?String = None
         match (jsonGetStr(body, "title")) {
             case Some(x) =>
                 if (isBlank(x)) {
                     throw apiErrFields("VALIDATION_FAILED", "参数校验失败", oneField("title", "标题不能为空"))
                 }
-                t.title = x
-                touched = true
+                nextTitle = Some(x)
             case None => ()
         }
+        var nextDesc: ?String = None
         match (jsonGetStr(body, "desc")) {
-            case Some(x) =>
-                t.desc = x
-                touched = true
+            case Some(x) => nextDesc = Some(x)
             case None => ()
         }
+        var nextOwner: ?Int64 = None
+        var nextOwnerDept: Int64 = 0
         match (jsonGetInt64(body, "owner_id")) {
             case Some(oid) =>
                 if (oid <= 0) {
@@ -376,11 +390,11 @@ public func handleTaskUpdate(ctx: Context, s: Store): Unit {
                 tgt2.dept_id = owner.dept_id
                 tgt2.owner_id = owner.id
                 requireAccess(actor, Action.CreateTask, tgt2)
-                t.owner_id = oid
-                t.dept_id = owner.dept_id
-                touched = true
+                nextOwner = Some(oid)
+                nextOwnerDept = owner.dept_id
             case None => ()
         }
+        var nextPlan: ?Int64 = None
         match (jsonGetInt64(body, "plan_id")) {
             case Some(pid) =>
                 if (pid > 0) {
@@ -389,13 +403,74 @@ public func handleTaskUpdate(ctx: Context, s: Store): Unit {
                         case None => throw apiErr("PLAN_NOT_FOUND")
                     }
                 }
+                nextPlan = Some(pid)
+            case None => ()
+        }
+        /* due_at 要区分"没传"和"传了 null"：显式传 null 表示清空截止时间 */
+        var dueGiven = false
+        var dueVal: Int64 = 0
+        if (body.containsKey("due_at")) {
+            dueVal = reqTime(body, "due_at")
+            dueGiven = true
+        }
+
+        /*
+         * N-18（部门边界）：只要本次动到了 owner 或 plan，就要求**结果状态**里
+         * "任务的负责人与课题同部门"。只在动到这两个字段时检查，
+         * 这样历史数据本来就不一致时也不会连改名都被挡住。
+         */
+        if (nextOwner.isSome() || nextPlan.isSome()) {
+            var effOwner: Int64 = t.owner_id
+            match (nextOwner) {
+                case Some(x) => effOwner = x
+                case None => ()
+            }
+            var effPlan: Int64 = t.plan_id
+            match (nextPlan) {
+                case Some(x) => effPlan = x
+                case None => ()
+            }
+            if (effPlan > 0 && effOwner > 0) {
+                var ownerDept: Int64 = 0
+                match (s.members.get(effOwner)) {
+                    case Some(m) => ownerDept = m.dept_id
+                    case None => ()
+                }
+                let planDept = planDeptOf(s, effPlan)
+                if (planDept > 0 && ownerDept > 0 && planDept != ownerDept) {
+                    throw apiErrMsg("FORBIDDEN_NOT_IN_DEPT", "任务的负责人与课题不在同一部门")
+                }
+            }
+        }
+
+        /* ---------- 阶段二：全部通过之后才落值（N-15） ---------- */
+        match (nextTitle) {
+            case Some(x) =>
+                t.title = x
+                touched = true
+            case None => ()
+        }
+        match (nextDesc) {
+            case Some(x) =>
+                t.desc = x
+                touched = true
+            case None => ()
+        }
+        match (nextOwner) {
+            case Some(oid) =>
+                t.owner_id = oid
+                t.dept_id = nextOwnerDept
+                touched = true
+            case None => ()
+        }
+        match (nextPlan) {
+            case Some(pid) =>
                 t.plan_id = pid
                 touched = true
             case None => ()
         }
-        /* due_at 要区分"没传"和"传了 null"：显式传 null 表示清空截止时间 */
-        if (body.containsKey("due_at")) {
-            t.due_at = reqTime(body, "due_at")
+        if (dueGiven) {
+            t.due_at = dueVal
             touched = true
         }
         if (touched) {

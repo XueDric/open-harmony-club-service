@@ -292,10 +292,13 @@ public func handleLogin(ctx: Context, s: Store): Unit {
     }
 
     /* ---------- ② 锁外：口令校验（~400 ms CPU，不占锁） ---------- */
-    var ok = false
-    if (found) {
-        ok = verifyPw(pw, credSalt, credHash, credIter)
-    }
+    /*
+     * N-16：号码不存在也照样跑一次**等价成本**的 PBKDF2（假材料，结果丢弃）。
+     * 否则"号码不存在"比"口令错误"快一个量级，登录接口就能被用来枚举手机号。
+     * 材料由纯函数 loginCreds 给出（见 auth.cj），它同时是这条修复的回归闸门。
+     */
+    let creds = loginCreds(found, credSalt, credHash, credIter)
+    let ok = verifyPw(pw, creds[0], creds[1], creds[2]) && found
 
     /* ---------- ③ 锁内：记账 / 复核 / 签发 ---------- */
     s.lock.lock()

@@ -425,10 +425,10 @@
 
 1. **服务端 + 账号体系（必须）**。「谁负责」天生是跨人共享的数据，纯本地 App 无法实现。此条不在功能清单内，但是地基。
 2. **后端技术栈**：仓颉 **1.1.3** + 轻舟框架，部署在云服务器（**Windows**，与开发机同平台）。服务端与客户端的编译链版本必须对齐。
-3. **部署方式：本机编译 + 拷贝制品**。因为服务器与开发机**同平台**，本机编好的 exe 可直接复用，**服务器上不需要安装编译器**。打包内容为 **exe + 4 个 DLL**（共约 18.5 MB）：`main.exe`、`libcangjie-runtime.dll`、`libboundscheck.dll`、`libcrypto-3-x64.dll`、`libssl-3-x64.dll`。详见 `deploy-windows-verify.md`。
+3. **部署方式：本机编译 + 拷贝制品**。因为服务器与开发机**同平台**，本机编好的 exe 可直接复用，**服务器上不需要安装编译器**。打包内容为 **exe + 4 个 DLL**（共约 18.8 MB）：`club-server.exe`、`libcangjie-runtime.dll`、`libboundscheck.dll`、`libcrypto-3-x64.dll`、`libssl-3-x64.dll`（由 `server\build-package.ps1` 产出）。详见 `deploy-windows-verify.md`。
 4. **持久化：文件存储**（内存 Store + 写时原子落盘 JSON）。仓颉标准库 / stdx / 轻舟均无关系型数据库驱动，自建 `sqlite3` FFI 绑定不在 v1 范围内。**数据访问必须抽成 Store 接口**，以便日后替换实现。
 5. **OpenSSL 3 必须随制品一起部署**：stdx 的 crypto / tls 硬编码 `dlopen` OpenSSL **3**。**`libcrypto-3-x64.dll` / `libssl-3-x64.dll` 必须与 exe 同目录**，缺失时密码哈希与 session 会**运行时 500 且编译期无警告**（与开发机上的现象一致）。
-6. **ABI 配置**：`entry/build-profile.json5` 的 `cangjieOptions.abiFilters` 已设为 `["arm64-v8a", "x86_64"]` —— x86_64 用于模拟器开发，arm64-v8a 用于成员真机。
+6. **ABI 配置**：客户端已于 2026-09-14 改为 **ArkTS**，原先 `entry/build-profile.json5` 里的 `cangjieOptions.abiFilters` 已删除（`cangjieOptions` 会被 stock hvigor 直接拒绝，见 `client-build.md`）；ABI 现由 DevEco 的 ArkTS 构建默认处理。
 7. **分发渠道（非技术卡点，需尽早并行启动）**：HarmonyOS NEXT 侧载受限，把 App 发到几十位成员手上通常需走 AppGallery Connect 内部测试轨道，涉及签名证书与测试版本审核。**该流程耗时可能超过开发本身，不要等开发完成才启动。**
 
 ---

@@ -145,14 +145,18 @@ public func handleMemberUpdate(ctx: Context, s: Store): Unit {
         let t = targetOf(actor, tgt)
         var touched = false
 
+        /* ---------- 阶段一：只收集 + 校验，**绝不碰 tgt**（N-15） ----------
+         * 原先是"边校验边赋值"。后面某个字段校验失败抛异常时，前面写进去的字段不会回滚，
+         * 而 tgt 是 s.members 里的**活引用** —— 客户端拿到 4xx，内存却已经被改了，
+         * 下一个写请求会把这次"被拒绝"的改动一起序列化落盘。 */
+        var nextName: ?String = None
         match (jsonGetStr(body, "name")) {
             case Some(nm) =>
                 requireAccess(actor, Action.EditMemberName, t)
                 if (isBlank(nm)) {
                     throw apiErrFields("VALIDATION_FAILED", "参数校验失败", oneField("name", "姓名不能为空"))
                 }
-                tgt.name = nm
-                touched = true
+                nextName = Some(nm)
             case None => ()
         }
 
@@ -186,8 +190,6 @@ public func handleMemberUpdate(ctx: Context, s: Store): Unit {
                     if (tgt.role == "president" && presidentCount(s) <= 1) {
                         throw apiErr("FORBIDDEN_LAST_PRESIDENT")
                     }
-                    tgt.role = r
-                    touched = true
                 case None => ()
             }
             match (newDept) {
@@ -198,10 +200,28 @@ public func handleMemberUpdate(ctx: Context, s: Store): Unit {
                             case None => throw apiErr("DEPT_NOT_FOUND")
                         }
                     }
-                    tgt.dept_id = did
-                    touched = true
                 case None => ()
             }
+        }
+
+        /* ---------- 阶段二：全部通过之后才落值（N-15） ---------- */
+        match (nextName) {
+            case Some(nm) =>
+                tgt.name = nm
+                touched = true
+            case None => ()
+        }
+        match (newRole) {
+            case Some(r) =>
+                tgt.role = r
+                touched = true
+            case None => ()
+        }
+        match (newDept) {
+            case Some(did) =>
+                tgt.dept_id = did
+                touched = true
+            case None => ()
         }
 
         if (touched) {

@@ -26,7 +26,9 @@
 | **服务端代码评审修复（第一轮）** | 按 `docs/code-review.md` 修完 3 个 P0 权限漏洞 + 8 个 P1 + 13 个 P2，并补上会真正失败的回归测试 | ✅ 完成并验证 |
 | **服务端代码评审（第二轮）** | `docs/code-review.md` 的 9 条新发现：文档类 N-2 / N-3 / N-4 · **N-1**（落地页 HTML 转义）+ **N-9**（CSP）· **N-7**（不可作用于同权/更高权的人，已从"重置密码"推广到改角色 / 禁用 / 改名）· **N-5**（`idem` 补校验）· **N-6**（注册节流改**按客户端 IP + 递增退避**，因此无需新增接口）—— **全部处理完毕**（N-8 按约定不改），每条都补了会因回退而变红的断言 | ✅ 完成并验证 |
 | **服务端代码评审（第三轮）** | `docs/code-review.md` 第三轮复验：第二轮 9 条**全部确认修复**；新发现 4 条（**N-10** `assign`/`assign-batch` 漏在同权保护之外 · N-11 文档限定词 · N-12 裸 IPv6 退化 · N-13 分布式尝试）—— **已全部处理**。N-10 的两个面（降级同权者、用 `assign` 推翻会长对同权者的移出决定）都已堵住 | ✅ 完成并验证 |
+| **轻舟升级与 CangDB 适配** | 升级轻舟到 **`3ea387e`**（上游 `141a735` 修好 DEF-1，本地补丁撤销）；新版 `store.cj` / `rbac.cj` 依赖的 **CangDB 上游仓只有 README、没有代码** → 用 `server/src/fw_rbac_store.cj`（文件存储的数据层）+ `fw_rbac.cj`（`requirePermission` 中间件）替代，`build.ps1` 排除框架原版 | ✅ 完成并验证（单测 322 / 冒烟 347 / TLS 22） |
 | **服务端容量基准与四项性能改造** | 按"接近千人"的容量问题做了可复现基准（`server/tests/bench.ps1`，真实 HTTP + 旧版本 worktree 对比），并落地四项改造：① 列表排序插入排序→**堆排序** ② **PBKDF2 移出全局锁**（三阶段加锁）③ 过期**令牌回收** ④ 整库落盘移出锁（请求链末端刷盘）。实测只有 ② 有量级收益（**4 并发登录 1574 → 867 ms**），①④ 在千人档落在噪声内、价值是最坏情况下界 —— 见 `docs/capacity-baseline.md` | ✅ 完成并验证（单测 349 / 冒烟 347 / TLS 22） |
+| **服务端第四轮复验修复** | 按 `docs/code-review.md` **第四轮**的 6 条新发现修：**N-14**（本机判定用子串匹配 `::1` → 远程 IPv6 可远程关停服务，改成按地址相等比白名单）· **N-15**（4 个 handler 被 4xx 拒绝却留下半改状态并落盘，改成两阶段赋值）· **N-16**（登录时序侧信道可枚举手机号，改成两条路径等价 PBKDF2）· **N-17**（审计 IO 移出锁）· **N-18**（任务可挂任意部门课题，补部门一致性）· **N-19**（招募 token 32 位 → 32 字节） | ✅ 完成并验证（单测 387 / 冒烟 360 / TLS 22） |
 | **客户端（ArkTS）** | 技术栈定为 **ArkTS**（2026-09-14）；已接入组内上传的成员模块 **3 页**（成员名录 / 待分配审批 / 管理），`hvigorw assembleHap` 实测 **BUILD SUCCESSFUL**（未签名）。**页面仍是假数据，未接任何接口** | 🟡 可构建；待签名 + 待接接口 |
 
 **接口进度 39 / 39**（认证 5 · 组织与成员 19 · 任务 8 · 课题 6 = 38 个业务接口，另加运维 `/health` 1 个）。
@@ -37,8 +39,8 @@
 
 ```powershell
 cd server
-.\build\club-server.exe test                                              # 单测 349 项
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 347 项
+.\build\club-server.exe test                                              # 单测 387 项
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 360 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1 # TLS 22 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1     # 容量基准（按需，见 docs/capacity-baseline.md）
 ```
@@ -53,8 +55,8 @@ docs/                        所有文档（设计、验证、报告、指南）
 server/                      服务端（仓颉）
   build.ps1                  编译（cjc + stdx + 轻舟同包编译）
   build-package.ps1          生成部署包 dist\club-server\（exe + 4 DLL + 证书 + 说明）
-  src/                       21 个源文件，按职责分层（见下）
-  tests/                     冒烟测试与 TLS 验证脚本
+  src/                       23 个源文件，按职责分层（见下）
+  tests/                     冒烟测试、TLS 验证与容量基准脚本
   build/                     构建输出（每次编译重建，不入库）
   dist/                      部署包（含私钥，不入库）
   certs/                     自签证书与私钥（不入库）
@@ -70,13 +72,14 @@ docs/                        见下方「文档索引」
 | 文件 | 职责 |
 | --- | --- |
 | `main.cj` | 入口：`serve` / `serve-tls` / `init-admin` / `test` + 全部路由注册 |
-| `store.cj` | 6 张表的数据模型 + 内存 Store + 原子落盘 + 查询/排序/课题树辅助 |
+| `store.cj` | 6 张表的数据模型 + 内存 Store + 原子落盘（**快照在锁内、写盘在锁外**）+ 查询/堆排序/课题树辅助 |
 | **`perms.cj`** | ★ **`can(member, action, target)`——全项目唯一的权限判定点** |
 | `auth.cj` | 口令哈希（PBKDF2-HMAC-SHA256）· 令牌 · 认证辅助 |
 | `errors.cj` / `jsonw.cj` / `views.cj` | 错误码表 · 响应包装与取参 · 对外 JSON 视图 |
 | `timex.cj` / `ids.cj` / `strx.cj` / `paging.cj` / `audit.cj` | 时间与时区 · ID 与随机口令 · 字符串工具 · 分页 · 敏感操作审计 |
 | `h_auth.cj` `h_dept.cj` `h_member.cj` `h_secret.cj` `h_link.cj` `h_task.cj` `h_plan.cj` `h_ops.cj` | 各模块的 HTTP handler（按 api-design 的 Part 分组） |
-| `tests.cj` | 单测（`club-server.exe test`） |
+| `fw_rbac_store.cj` / `fw_rbac.cj` | 轻舟 RBAC 的**本地适配层**（上游版依赖 CangDB，而该仓库暂无代码）：文件存储的数据层 + `requirePermission` 中间件 |
+| `tests.cj` | 单测（`club-server.exe test`）；容量基准见 `server/tests/bench.ps1` |
 
 ---
 

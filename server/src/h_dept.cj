@@ -87,6 +87,8 @@ public func handleDeptUpdate(ctx: Context, s: Store): Unit {
             case None => throw apiErr("DEPT_NOT_FOUND")
         }
         var touched = false
+        /* ---------- 阶段一：只校验，不碰 d（N-15：d 是 s.departments 里的活引用） ---------- */
+        var nextName: ?String = None
         match (jsonGetStr(body, "name")) {
             case Some(nm) =>
                 if (isBlank(nm)) {
@@ -95,10 +97,10 @@ public func handleDeptUpdate(ctx: Context, s: Store): Unit {
                 if (deptNameTaken(s, nm, d.id)) {
                     throw apiErrFields("ALREADY_EXISTS", "部门名已存在", oneField("name", "部门名已存在"))
                 }
-                d.name = nm
-                touched = true
+                nextName = Some(nm)
             case None => ()
         }
+        var nextSort: ?Int64 = None
         match (jsonGetInt64(body, "sort")) {
             case Some(sv) =>
                 /* M-8：同 handleDeptCreate，越界值会让排序键溢出并永久写进数据文件 */
@@ -106,6 +108,19 @@ public func handleDeptUpdate(ctx: Context, s: Store): Unit {
                     throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
                         oneField("sort", "排序值需在 ${SORT_MIN} 到 ${SORT_MAX} 之间"))
                 }
+                nextSort = Some(sv)
+            case None => ()
+        }
+
+        /* ---------- 阶段二：全部通过之后才落值（N-15） ---------- */
+        match (nextName) {
+            case Some(nm) =>
+                d.name = nm
+                touched = true
+            case None => ()
+        }
+        match (nextSort) {
+            case Some(sv) =>
                 d.sort = sv
                 touched = true
             case None => ()

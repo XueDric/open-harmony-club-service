@@ -90,8 +90,34 @@ public func verifyPw(pw: String, saltHex: String, hashHex: String, iters: Int64)
     return constantTimeEq(toHexString(dk), hashHex)
 }
 
-/* ===================== 令牌 ===================== */
+/*
+ * N-16：手机号不存在时用的**假口令材料**。进程内固定即可 ——
+ * 攻击者无法从响应里区分"用了哪个盐"。长度与真实值同规格
+ * （32 字节盐的 hex / 32 字节摘要的 hex），保证 PBKDF2 的输入规模一致。
+ */
+public let DUMMY_PW_SALT: String = "00000000000000000000000000000000"
+public let DUMMY_PW_HASH: String = "0000000000000000000000000000000000000000000000000000000000000000"
 
+/*
+ * 取本次登录应该用哪一组口令材料（**纯函数** —— N-16 的回归闸门）。
+ *
+ * 手机号不存在时返回假材料 + **标准迭代数**，让两条路径的 CPU 成本一致。
+ * 原先 handleLogin 的 ② 段写的是 `if (found) { ok = verifyPw(...) }`：号码不存在时
+ * 整段 10 万次迭代被跳过，实测响应时间差约 13 倍（388/382/431 ms 对 28/29/30 ms），
+ * 于是登录接口本身成了一个"某手机号是否注册过"的枚举器 —— 而"社团里有哪些人"
+ * 正是本工具要回答、也因此最该保护的第一类信息。
+ *
+ * 有单测盯着（`tests.cj` 的 `testLoginCreds`）：一旦有人改回"不存在就跳过 PBKDF2"，
+ * 返回值会退化成空串 / 0 次迭代，测试立刻变红。
+ */
+public func loginCreds(found: Bool, salt: String, hash: String, iter: Int64): (String, String, Int64) {
+    if (found) {
+        return (salt, hash, iter)
+    }
+    return (DUMMY_PW_SALT, DUMMY_PW_HASH, PBKDF2_ITER)
+}
+
+/* ===================== 令牌 ===================== */
 /* 取出 Authorization: Bearer <token>。 */
 public func bearerToken(ctx: Context): ?String {
     match (ctx.requestHeader("authorization")) {
