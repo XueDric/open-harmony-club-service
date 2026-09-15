@@ -24,7 +24,7 @@ export interface InviteLinkView {
   url: string;
   dept: DeptBrief;
   enabled: boolean;
-  created_at: number;
+  created_at: string | null;
 }
 
 /** GET /api/v1/depts 响应 */
@@ -32,7 +32,7 @@ export interface DeptListResponse {
   items: DeptView[];
 }
 
-/** GET /api/v1/depts/{id}/links 响应 */
+/** GET /api/v1/dept-invite-links 响应 */
 export interface DeptLinksResponse {
   items: InviteLinkView[];
 }
@@ -78,18 +78,18 @@ export class DeptApi {
     return this.client.delete_<Record<string, never>>(`/depts/${id}`);
   }
 
-  /** GET /api/v1/depts/{id}/links — 获取部门的所有招募链接 */
-  async listLinks(deptId: number): Promise<ApiResponse<DeptLinksResponse>> {
-    return this.client.get<DeptLinksResponse>(`/depts/${deptId}/links`);
+  /** GET /api/v1/dept-invite-links — 获取所有招募链接 */
+  async listLinks(): Promise<ApiResponse<DeptLinksResponse>> {
+    return this.client.get<DeptLinksResponse>('/dept-invite-links');
   }
 
-  /** POST /api/v1/depts/{id}/links — 创建招募链接 */
+  /** POST /api/v1/dept-invite-links — 创建招募链接 */
   async createLink(deptId: number): Promise<ApiResponse<InviteLinkView>> {
-    return this.client.post<InviteLinkView>(`/depts/${deptId}/links`);
+    return this.client.post<InviteLinkView>('/dept-invite-links', { dept_id: deptId });
   }
 
-  /** PATCH /api/v1/links/{token}/toggle — 启用/禁用招募链接 */
+  /** DELETE /api/v1/dept-invite-links/{token} — 停用招募链接 */
   async toggleLink(token: string): Promise<ApiResponse<InviteLinkView>> {
-    return this.client.patch<InviteLinkView>(`/links/${token}/toggle`);
+    return this.client.delete_<InviteLinkView>(`/dept-invite-links/${token}`);
   }
 }

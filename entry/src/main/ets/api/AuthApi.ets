@@ -1,7 +1,7 @@
 /**
  * 认证相关 API
  * POST /auth/login · POST /auth/register · POST /auth/logout
- * GET /auth/me · PATCH /auth/password · PATCH /auth/profile
+ * GET /auth/me · PUT /auth/password
  *
  * 后端来源：backend-src/h_auth.cj · views.cj
  */
@@ -22,7 +22,7 @@ export interface MemberBrief {
   role: string | null;
   dept: DeptBrief | null;
   status: 'active' | 'pending' | 'disabled';
-  joined_at: number;
+  joined_at: string | null;
 }
 
 /** 成员完整（本人可见手机号）— views.cj:memberSelf */
@@ -54,10 +54,11 @@ export interface LoginResponse {
 }
 
 export interface RegisterRequest {
-  code: string;
+  register_code: string;
   phone: string;
   name: string;
   password: string;
+  dept_id?: number;
 }
 
 export type RegisterResponse = LoginResponse;
@@ -70,10 +71,6 @@ export interface MeResponse {
 export interface ChangePasswordRequest {
   old_password: string;
   new_password: string;
-}
-
-export interface UpdateProfileRequest {
-  name?: string;
 }
 
 // ─── API 类 ───
@@ -105,13 +102,8 @@ export class AuthApi {
     return this.client.get<MeResponse>('/auth/me');
   }
 
-  /** PATCH /api/v1/auth/password */
+  /** PUT /api/v1/auth/password */
   async changePassword(data: ChangePasswordRequest): Promise<ApiResponse<Record<string, never>>> {
-    return this.client.patch<Record<string, never>>('/auth/password', data);
-  }
-
-  /** PATCH /api/v1/auth/profile */
-  async updateProfile(data: UpdateProfileRequest): Promise<ApiResponse<MemberSelf>> {
-    return this.client.patch<MemberSelf>('/auth/profile', data);
+    return this.client.put<Record<string, never>>('/auth/password', data);
   }
 }
