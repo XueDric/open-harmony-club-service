@@ -269,31 +269,34 @@ Part 4（任务 8）/ Part 5（课题 6）逐条核对方法 + 路径 + 请求�
 | §6 `_commit_msg.txt` | ⚠️ **仍在仓库根** | 7 行文件，建议删掉 |
 | §7 非阻塞项 | ⏳ 未动 | router deprecated 等，按排期处理即可 |
 
-**唯一需要再确认的一条：明文 HTTP 的开关位置。**
+**关于明文 HTTP 的开关：本条上一版建议是错的，已用编译实测纠正。**
 
 PR #3 新增了 `resources/base/profile/network_config.json`，并在 `module.json5` 里用
-`metadata: network_security_config` 引用它，键名是 `network-security-config` / `base-config` /
-`cleartext-traffic-permitted`。但这套键名在**本机 DevEco 里搜不到**；hvigor 自己的类型定义
-（`tools/hvigor/hvigor-ohos-plugin/src/options/configure/config-json-options.d.ts` 的 `NetworkObj`）
-与 SDK 的两份 `configSchema_rich.json` 只认 **app 级**的写法：
+`metadata: network_security_config` 引用它（键名 `network-security-config` / `base-config` /
+`cleartext-traffic-permitted`）。这套键名在**本机 DevEco 里搜不到**，于是复验时试了两种"权威位置"，
+**都被 schema 拒绝**（下面两条都是真实构建输出）：
 
-```json5
-// AppScope/app.json5
-"app": {
-  "network": {
-    "cleartextTraffic": true      // 或 securityConfig.domainSettings.cleartextPermitted（按域名）
-  }
-}
-```
+| 试的位置 | 结果 |
+| --- | --- |
+| `AppScope/app.json5` → `app.network.cleartextTraffic` | ❌ `00303038 Configuration Error / Schema validate failed, at file: AppScope/app.json5 / propertyName: 'network'` |
+| `entry/src/main/module.json5` → `module.network.cleartextTraffic` | ❌ 同上：`at file: entry/src/main/module.json5 / propertyName: 'network'` |
 
-当前 `AppScope/app.json5` **没有 `network` 字段**，所以那份独立配置文件**很可能被忽略**。
-后果取决于运行时对明文流量的默认值（这一点从 SDK schema 里看不出来）：
+**为什么两处都不行**：hvigor 的类型定义里 `network?: NetworkObj` 挂在 `DeviceConfigOptionObj` 下
+（`tools/hvigor/hvigor-ohos-plugin/src/options/configure/config-json-options.d.ts:34-60`），
+SDK 的 `configSchema_rich.json` 里 `network` 的兄弟字段是 `reqVersion` / `directLaunch` ——
+那是**旧 FA 模型的 `config.json` → `deviceConfig`**，不是 Stage 模型（`app.json5` + `module.json5`）。
+即：**这个 SDK（API 24 / DevEco 6.1.1.300）里没有 Stage 模型的明文开关可写。**
 
-- 若默认允许 → 现在就能连通，那份文件只是无效负担；
-- 若默认禁止 → HTTP 请求会失败，App 连不上服务端。
+**所以本条结论改为：不要加任何配置**，用一次真机/模拟器实测确认即可：
 
-**建议**：把开关写到 `AppScope/app.json5` 的 `app.network`（无论默认值如何都明确生效），
-再在真机/模拟器上实测一次 HTTP 是否通；确认后那个 `network_config.json` + `metadata` 可以删掉。
+- 起后端 HTTP（`serve 8080`）+ 模拟器/真机，走一遍登录；
+- 若登录页报 `NETWORK_ERROR`（`HttpClient` 的 catch 分支给的就是这个码）→ 明文确实被拦，
+  改走 HTTPS：`serve-tls 8443` + **在 App 里内置自签 CA**（步骤见 `docs/HANDOFF.md` 的 D 段）；
+- 若一切正常 → 明文默认放行，PR #3 里那份 `network_config.json` + `metadata` 属无效负担，
+  可以删掉（它不被 schema 校验，留着不会报错，只会误导下一个人）。
+
+⚠️ **别把开关写进 `app.json5` 或 `module.json5`** —— 那会让构建**直接失败**（见上表：
+`00303038 Configuration Error`）。
 
 ### 怎么重跑这份复验
 
