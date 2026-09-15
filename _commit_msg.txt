@@ -1,0 +1,7 @@
+feat(client): 接入基建层与认证模块
+
+- 新增 api/HttpClient 及 Auth/Task/Dept/Member/Plan 接口封装
+- 新增 store/TokenStore、PermissionStore 与 utils/RouterUtils
+- 新增 Splash 路由守卫及登录/注册/待分配/我的 页面
+- EntryAbility 改为初始化 TokenStore 并加载 SplashPage
+- main_pages.json 登记新增页面

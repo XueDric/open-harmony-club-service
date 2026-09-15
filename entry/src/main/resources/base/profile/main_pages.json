@@ -1,5 +1,10 @@
 {
   "src": [
-    "pages/Index"
+    "pages/Index",
+    "pages/LoginPage",
+    "pages/RegisterPage",
+    "pages/PendingWaitPage",
+    "pages/SplashPage",
+    "pages/ProfilePage"
   ]
 }
