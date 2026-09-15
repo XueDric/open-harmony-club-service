@@ -116,6 +116,7 @@ cd build
 | `docs/v1-scope.md` | 范围基准：11 页面、6 张表、19 条业务规则、权限矩阵 | 想知道"这个要不要做" |
 | `docs/frontend-brief.md` | 前端对接精简版 | 客户端同事看 |
 | **`docs/client-build.md`** | **客户端构建与现状**：构建命令、两个环境坑（JBR / SDK 路径）、ArkTS 迁移记录、剩余 TODO | **动客户端前先看这个** |
+| **`docs/client-integration-review.md`** | **客户端接入适配检查（给写客户端的同学）**：PR #2 的 **3 条拦路问题**（缺 INTERNET 权限 / baseUrl 是相对路径 / 响应信封少剥一层）+ **10 处接口路径·方法对不上**，每条带实测状态码与改法 | 接接口前先对一遍，改完按 §8 验收 |
 | **`docs/capacity-baseline.md`** | **容量基准与四项性能改造**：可复现的实测矩阵（改造前/后 × 1000/3000）、每项改造的真实收益与**没测出收益的地方**、容量阈值 | 想知道"近千人扛不扛得住""哪项优化真有用" |
 | `docs/deploy-windows-verify.md` | 部署与验证步骤、目标配置基线 | 部署时看 |
 | *（对外材料已移出仓库）* | 仓颉运行时缺陷报告 + Issue 稿件 + 最小复现（`repro.cj`）、轻舟 TLS 需求与实测 —— 都在仓库上层 `cangjie-upstream\`（完整路径 `E:\harmonyOS\cangjie-upstream\`） | 追溯上游问题来源时 |

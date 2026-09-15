@@ -83,6 +83,7 @@ $src  = Get-ChildItem "E:\harmonyOS\cangjie_web\server\src\*.cj" | ForEach-Objec
 | `api-design.md` | **完整接口设计** Part 1–6，39 个接口逐条定义 | **写服务端时全程对照** |
 | `frontend-brief.md` | **前端对接精简版**：页面清单、通用约定、错误码、**5 件必知事项** | **客户端同事先看这个** |
 | **`client-build.md`** | **客户端构建与现状**：ArkTS 构建命令、两个环境坑、迁移记录、剩余 TODO | **动客户端前先看这个** |
+| **`client-integration-review.md`** | **客户端接入适配检查（待办清单）**：队友 PR #2 能编译但调不通服务端 —— 3 条拦路问题（INTERNET 权限 / baseUrl 相对路径 / 响应信封少剥一层）+ 10 处接口路径·方法对不上，带实测状态码 | **客户端同学接接口前必看**；改完可删/归档 |
 | `deploy-windows-verify.md` | 部署与验证、目标配置基线 | 部署时看 |
 | **`code-review.md`** | **代码评审报告（三轮）**：24 + 9 + 4 条，全部已修，附回退实测证据 | 想知道"哪些坑已经踩过、为什么这样写" |
 | **`capacity-baseline.md`** | **容量基准与四项性能改造**：可复现基准（`server/tests/bench.ps1`）、改造前后实测矩阵、每项的**真实**收益与"没测出收益"的地方、容量阈值 | 被问"近千人扛不扛得住""这项优化值不值"时 |
