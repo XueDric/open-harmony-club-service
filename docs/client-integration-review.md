@@ -249,3 +249,60 @@ Part 4（任务 8）/ Part 5（课题 6）逐条核对方法 + 路径 + 请求�
 | 接口实测 | 真起服务端（HTTP 8080，临时数据目录），`Invoke-WebRequest` 打客户端代码里的每一条路径 |
 | 对照依据 | `docs/api-design.md`（接口权威）· `server/src/views.cj`（字段形状）· `server/src/jsonw.cj`（信封/错误）· `server/src/paging.cj`（分页） |
 | 未覆盖 | 没在设备/模拟器上跑过 App（无设备），所以"运行时行为"结论均来自代码 + 实测状态码 + 编译警告；§1.3 的表现推断请以真机实测为准 |
+
+---
+
+## 9. 复验结果（2026-09-15 · 针对 PR #3 `f5b4af7`）
+
+队友按本清单改完并推了 PR #3（`9fb94a2 fix(client): 对齐后端 P0 接口契约`）。
+复验方式：重新编译 + **把 §3 那张表做成脚本自动跑**（`server/tests/client-contract-check.ps1`，随本次复验新增）。
+
+| 清单条目 | 复验结果 | 证据 |
+| --- | --- | --- |
+| §1.1 INTERNET 权限 | ✅ 已修 | `module.json5` 加了 `requestPermissions`；重新编译后**不再出现**那条 INTERNET 警告 |
+| §1.2 baseUrl / setBaseUrl | ✅ 已修 | 新增 `config/Env.ets`（`http://10.0.2.2:8080/api/v1`），`EntryAbility.onCreate` 里调 `setBaseUrl(BASE_URL)` |
+| §1.3 响应信封 | ✅ 已修 | `HttpClient.ets:140-144` 改成 `data: resultData['data']` |
+| §2 错误形状 | ✅ 已修 | `HttpClient.ets:160-170` 读 `error.code` / `error.message`，`fields` 按对象取 |
+| §3 十处路径/方法 | ✅ **全部已修** | 契约回归 **PASS 30 / FAIL 0**（客户端声明的 30 条调用，服务端全认得） |
+| §3 字段 `register_code` | ✅ 已修 | `AuthApi.ets:57` + `RegisterPage.ets:319` |
+| §4 时间字段建为 ISO 字符串 | ✅ 已修 | 各 API 接口里已是 `string \| null` |
+| §6 `_commit_msg.txt` | ⚠️ **仍在仓库根** | 7 行文件，建议删掉 |
+| §7 非阻塞项 | ⏳ 未动 | router deprecated 等，按排期处理即可 |
+
+**唯一需要再确认的一条：明文 HTTP 的开关位置。**
+
+PR #3 新增了 `resources/base/profile/network_config.json`，并在 `module.json5` 里用
+`metadata: network_security_config` 引用它，键名是 `network-security-config` / `base-config` /
+`cleartext-traffic-permitted`。但这套键名在**本机 DevEco 里搜不到**；hvigor 自己的类型定义
+（`tools/hvigor/hvigor-ohos-plugin/src/options/configure/config-json-options.d.ts` 的 `NetworkObj`）
+与 SDK 的两份 `configSchema_rich.json` 只认 **app 级**的写法：
+
+```json5
+// AppScope/app.json5
+"app": {
+  "network": {
+    "cleartextTraffic": true      // 或 securityConfig.domainSettings.cleartextPermitted（按域名）
+  }
+}
+```
+
+当前 `AppScope/app.json5` **没有 `network` 字段**，所以那份独立配置文件**很可能被忽略**。
+后果取决于运行时对明文流量的默认值（这一点从 SDK schema 里看不出来）：
+
+- 若默认允许 → 现在就能连通，那份文件只是无效负担；
+- 若默认禁止 → HTTP 请求会失败，App 连不上服务端。
+
+**建议**：把开关写到 `AppScope/app.json5` 的 `app.network`（无论默认值如何都明确生效），
+再在真机/模拟器上实测一次 HTTP 是否通；确认后那个 `network_config.json` + `metadata` 可以删掉。
+
+### 怎么重跑这份复验
+
+```powershell
+cd server
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-check.ps1
+```
+
+脚本会自己：从 `entry/src/main/ets/api/*.ets` 抽出 (方法, 路径) → 起一个临时服务端 →
+逐条打过去 → 断言**没有 404（路径写错）也没有 405（方法写错）**
+（不带令牌时的正确响应是 401＝路由存在但需登录）。客户端再改接口时跑一次即可。
