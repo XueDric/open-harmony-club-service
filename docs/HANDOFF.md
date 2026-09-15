@@ -6,7 +6,7 @@
 - 工作区：`E:\harmonyOS\cangjie_web`
 - 设计阶段：**已完成，接口冻结**（39 / 39）
 - **当前阶段：服务端全部完成并验证**（M1–M8，含三轮独立代码评审修复）；**客户端技术栈定为 ArkTS，已接入组内上传的成员模块 3 页并能编译打包（未签名、未接接口）** —— 见 `client-build.md`
-- 三套测试基线：**单测 300 / 冒烟 347 / TLS 22 全绿**（跑法见 `README.md` 顶部）
+- 三套测试基线：**单测 322 / 冒烟 347 / TLS 22 全绿**（跑法见 `README.md` 顶部）
 
 > §8、§9 是**设计阶段**给出的开工建议与待问问题，现已全部执行完，保留作方法论参考；
 > §11 记录服务端从 M1 到 M8 的实际进展，**数字以那里的最新一条为准**。
@@ -41,7 +41,7 @@
 | --- | --- |
 | 编译器 | `D:\Cangjie\bin\cjc.exe` — **1.1.3** (cjnative) |
 | stdx | `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` — **1.1.3.1** |
-| 轻舟源码 | `E:\cangjie\qingzhou` — commit **`1cad35b` + 本地 2 行补丁** |
+| 轻舟源码 | `E:\cangjie\qingzhou` — commit **`3ea387e`**（2026-09-14 升级；DEF-1 上游已修，本地补丁已撤） |
 | OpenSSL 3 | `E:\cangjie\qingzhou\deps\openssl\` 下两个 DLL |
 | 仓颉运行时 | `D:\Cangjie\runtime\lib\windows_x86_64_cjnative` |
 | **DevEco Studio** | **6.1.1.300** @ `D:\DevEco Studio`：自带 SDK **API 24 / 6.1.1.125**、hvigor **6.24.4**、JBR **21**（构建客户端必须用它的 JBR，原因见 `client-build.md`） |
@@ -75,7 +75,7 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | `README.md` | 仓库唯一入口：进度、目录结构、六条最容易踩的坑 | 第一次打开这个仓库时 |
 | *（对外材料已移出仓库）* | 轻舟 TLS 实测与缺陷清单、仓颉运行时缺陷报告 —— 见上层 `cangjie-upstream\` | 追溯上游问题时看 |
 | **`server-guide.md`** | **服务端**：构建/初始化/运行/测试、进度表、两条实现纪律 | **写服务端时先看** |
-| **`API-NOTES.md`** | **服务端**：编译期 API 事实清单 + **28 条**踩坑记录 | 加新函数前先查（避让框架同名符号） |
+| **`API-NOTES.md`** | **服务端**：编译期 API 事实清单 + **29 条**踩坑记录 | 加新函数前先查（避让框架同名符号） |
 
 ---
 
@@ -155,29 +155,31 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 
 | 坑 | 表现 / 解法 |
 | --- | --- |
-| **轻舟当前版本编译不过**（DEF-1） | `PrivateKey.decodeFromPem` 未实现 → 已打本地补丁，见下 |
+| **轻舟新版 `store.cj` / `rbac.cj` 依赖 CangDB** | `import cangdb.*` 找不到包（CangDB 上游仓只有 README、没有代码）→ 已用 `server/src/fw_rbac_store.cj`（文件存储）+ `fw_rbac.cj`（我们的错误格式）适配，`build.ps1` 排除框架原版 |
 | **块注释里不能出现 `/*`** | 仓颉块注释可嵌套 → 会吞到文件末尾，报 `unterminated block comment` |
 | **服务 `cwd` 必须是 exe 所在目录** | 数据目录与证书按相对路径读；`cwd` 不对会出现**假失败 + 假通过** |
 | **crypto 缺 OpenSSL 3 时** | **编译期无警告**，运行时才 500；两个 DLL 必须与 exe 同目录 |
 | **项目路径保持纯 ASCII** | 否则 `cjpm` 报 `Invalid utf8 byte sequence` |
-| **用工具局部编辑 `.ps1` 会丢 BOM** | PS 5.1 按 ANSI 解析中文注释，报 `MissingEndCurlyBrace` / `意外的标记` 这类**看起来像手写语法错**的解析失败。改完 `.ps1` 必须确认 BOM 仍在（2026-09-14 已实证 3 次：`smoke.ps1` ×2、`build.ps1` ×1） |
+| **用工具局部编辑 `.ps1` 会丢 BOM** | PS 5.1 按 ANSI 解析中文注释，报 `MissingEndCurlyBrace` / `意外的标记` 这类**看起来像手写语法错**的解析失败。改完 `.ps1` 必须确认 BOM 仍在（2026-09-14 已实证 4 次：`smoke.ps1` ×2、`build.ps1` ×2 —— 含**文件编辑工具**改中文注释那次） |
 | **Windows 无 `std.runtime.Signal`** | 优雅关闭靠 `POST /admin/shutdown`，**该端点必须限制为本机可访问** |
 | **部署别只拷 2 个 OpenSSL DLL** | 会启动即失败——还缺 `libcangjie-runtime.dll` |
 
-### 本地补丁（DEF-1，必须保留）
+### 本地补丁（DEF-1）—— **2026-09-14 已撤销**
 
-`E:\cangjie\qingzhou\src\app.cj` 已改 2 处：
+上游 `141a735`「修复 TLS 验证报告缺陷（DEF-1~DEF-5）」已修同一处，且实现更可移植
+（我们原来用的是 `GeneralPrivateKey`，备份在 `E:\cangjie\def1-local-patch.patch`）：
 
 ```diff
-@@ import 区
-+import stdx.crypto.keys.*
-+import stdx.crypto.common.*
-@@ serveTls()
 -        let key = PrivateKey.decodeFromPem(keyPem)
-+        let key: PrivateKey = GeneralPrivateKey.decodeFromPem(keyPem)
++        // RSAPrivateKey.decodeFromPem 在 stdx 1.0.5.1 与 1.1.3.1 均实现
++        let key = RSAPrivateKey.decodeFromPem(keyPem)
 ```
 
-已反馈轻舟团队（见上层 `cangjie-upstream\qingzhou-tls-verification.md`）。**上游修复后可撤销。**
+**已实测**：升级到 `3ea387e` 后 `tests/tls-check.ps1` **22 / 0 全绿**，撤补丁不影响 TLS。
+
+→ 结论：本项目现在**跑在轻舟上游原版上，对框架源码没有任何补丁**。
+唯一的例外是 CangDB 适配，但那不是改框架源码，而是在我们自己仓库里提供替代实现（见 §11 与
+`server/src/fw_rbac_store.cj` 的文件头）。
 
 ---
 
@@ -185,7 +187,7 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 
 > **以 §11.4 的现行清单为准**（本节原表已合并过去，避免两处各写一份而逐渐不一致）。
 > 仍未解决的仍是那几项：**服务器步骤 0**（架构 / 公网 IP / 端口 / 防火墙 + 云安全组）、
-> **轻舟 DEF-1 上游未修**、**服务器可用期限与备份交接人**，以及**本机直连 github.com 需走代理**。
+> **服务器可用期限与备份交接人**，以及**轻舟的 CangDB 依赖（上游仓库只有 README、没有代码）**。
 > 已定：忘记密码不做自助找回（由管理员重置；会长也一样，见 §4.3 的口径）。
 
 ---
@@ -231,8 +233,10 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 
 ## 11. 服务端进展（2026-09-13 更新）
 
-> 客户端由小组其他成员并行推进；本工作区当前只做服务端。轻舟上游更新没等到，
-> 继续使用 **`1cad35b` + 本地 DEF-1 补丁**（补丁**不能撤**，撤了就编译不过）。
+> 客户端由小组其他成员并行推进；本工作区当前只做服务端。
+> 轻舟已于 2026-09-14 升级到 **`3ea387e`**（DEF-1 上游已修，本地补丁已撤）；
+> 新版新增的 `src/store.cj` / `src/rbac.cj` 因依赖 CangDB（上游无代码）改由我们的适配版提供，
+> `build.ps1` 中排除框架原版。
 
 ### 11.1 已完成并验证：M1 骨架 + M2 组织与成员
 
@@ -285,7 +289,7 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | M4 | Part 5 课题 6 个接口（环形校验、深度 6、删除上提、O(n) 聚合） | ✅ **已完成并验证**（单测 233 / 冒烟 280 全绿） |
 | M5 | 打包部署 · 带 SAN 自签证书 · TLS 关卡 | 🟡 **本机部分已完成**（TLS 22 项全绿 + 部署包 18.8 MB 端到端跑通）；公网部署**卡在服务器步骤 0**（架构 / 公网 IP / 端口 / 防火墙） |
 | M6 | 按 `docs/code-review.md` **第一轮**修缺陷（3 个 P0 权限漏洞 + 8 个 P1 + 13 个 P2，共 24 条） | ✅ **已完成并验证**（单测 273 / 冒烟 325 / TLS 22 全绿，2026-09-14） |
-| M7 | `docs/code-review.md` **第二轮**：独立复验第一轮 24 条（全部确认修复）+ **9 条新发现**（N-1…N-9） | ✅ **已完成**——9 条全部处理（N-8 按约定不改）：N-1（落地页 HTML 转义）/ N-2 / N-3 / N-4 / N-5（`idem` 补 `checkLoaded`）/ **N-6（注册节流改为按客户端 IP + 递增退避，因此未新增接口，接口计数仍是 39 / 39）** / **N-7（不可作用于同权或更高权的人，已从"重置密码"推广到改名 / 改角色 / 禁用）** / N-9（CSP），每条都带"回退即变红"的回归断言。当前基线 **单测 300 / 冒烟 347 / TLS 22 全绿** |
+| M7 | `docs/code-review.md` **第二轮**：独立复验第一轮 24 条（全部确认修复）+ **9 条新发现**（N-1…N-9） | ✅ **已完成**——9 条全部处理（N-8 按约定不改）：N-1（落地页 HTML 转义）/ N-2 / N-3 / N-4 / N-5（`idem` 补 `checkLoaded`）/ **N-6（注册节流改为按客户端 IP + 递增退避，因此未新增接口，接口计数仍是 39 / 39）** / **N-7（不可作用于同权或更高权的人，已从"重置密码"推广到改名 / 改角色 / 禁用）** / N-9（CSP），每条都带"回退即变红"的回归断言。当前基线 **单测 322 / 冒烟 347 / TLS 22 全绿** |
 | M8 | `docs/code-review.md` **第三轮复验**：复验第二轮 9 条 + **4 条新发现**（N-10…N-13） | ✅ **已完成**——第二轮 9 条全部确认修复；**N-10**（`assign` / `assign-batch` 漏在同权保护之外：副会长可降级同权者，甚至用 `assign` 推翻会长对同权者的移出决定）已修，批量改为逐条判定；N-11 文档限定词、N-12 裸 IPv6 退化注释、N-13 分布式局限说明均已处理 |
 
 **接口进度 39 / 39**：认证 5 · 组织与成员 19 · 任务 8 · 课题 6（= 38 个业务接口）+ 运维 `/health`。
@@ -320,7 +324,7 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | # | 事项 | 影响 |
 | --- | --- | --- |
 | 1 | **服务器步骤 0 未跑** | 卡 M5：需确认架构是否 x64、公网 IP、端口、防火墙+安全组 |
-| 2 | 轻舟 DEF-1 上游未修 | 本地补丁顶着；补丁已记录在 `server/build.ps1` 与 `API-NOTES.md` |
+| 2 | **CangDB 上游无代码**（`gitcode.com/BIT-FSSLab/CangDB` 只有 README） | 轻舟新版 `store.cj`/`rbac.cj` 依赖它；已用文件存储适配版顶上（`fw_rbac_store.cj` + `fw_rbac.cj`），拿到可用 CangDB 后替换回上游实现 |
 | 3 | 工作区原先**不是 git 仓库** | 2026-09-13 已建 GitHub 仓库 `XueDric/open-harmony-club-service` 并上传；提交作者为 `XueDric <318242380+XueDric@users.noreply.github.com>`。**2026-09-14 已把三轮评审修复 + 仓库整理全部推送**，远端 `main` 与本地 HEAD 一致 |
 | 3b | **推送 github 的网络** | 2026-09-14 实测**直连可用**（`git push origin main` 直接成功，此前记录的"直连不通"已不适用）。若哪天直连超时（约 20s），改走本地代理：<br>`git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main`<br>（直连超时**别误判成权限问题**） |
 | 4 | 忘记密码：v1 由会长重置 | 已定 |

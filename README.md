@@ -36,7 +36,7 @@
 
 ```powershell
 cd server
-.\build\club-server.exe test                                              # 单测 300 项
+.\build\club-server.exe test                                              # 单测 322 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 347 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1 # TLS 22 项
 ```
@@ -105,7 +105,7 @@ cd build
 | --- | --- | --- |
 | **`docs/HANDOFF.md`** | **交接说明**：项目现状、已冻结设计、验证过的技术事实、未决事项 | **接手项目先看这个** |
 | `docs/server-guide.md` | 服务端指南：构建/运行/测试、进度、两条实现纪律 | 动服务端代码前看 |
-| **`docs/API-NOTES.md`** | 编译期 API 事实清单 + **28 条踩坑记录** | 加新函数前先查（避让框架同名符号） |
+| **`docs/API-NOTES.md`** | 编译期 API 事实清单 + **29 条踩坑记录** | 加新函数前先查（避让框架同名符号） |
 | `docs/api-design.md` | **接口设计的唯一权威**：39 个接口逐条定义 | 写服务端时全程对照 |
 | **`docs/code-review.md`** | **代码评审报告（三轮）**：第一轮 24 条（3 P0 + 8 P1 + 13 P2）、第二轮 9 条、第三轮 4 条 —— **全部修复并独立复验**，附回退实测证据 | 想了解"哪些坑已经踩过" |
 | `docs/v1-scope.md` | 范围基准：11 页面、6 张表、19 条业务规则、权限矩阵 | 想知道"这个要不要做" |
@@ -122,7 +122,7 @@ cd build
 | --- | --- |
 | 编译器 | `D:\Cangjie\bin\cjc.exe` —— **1.1.3** (cjnative, x86_64-w64-mingw32) |
 | stdx | `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` —— **1.1.3.1** |
-| 轻舟源码 | `E:\cangjie\qingzhou` —— commit `1cad35b` **+ 本地 2 行补丁（DEF-1）** |
+| 轻舟源码 | `E:\cangjie\qingzhou` —— commit **`3ea387e`**（2026-09-14 升级；**DEF-1 已由上游 `141a735` 修复，我们的本地补丁已撤**） |
 | OpenSSL 3 | `E:\cangjie\qingzhou\deps\openssl\` 下两个 DLL |
 | 仓颉运行时 | `D:\Cangjie\runtime\lib\windows_x86_64_cjnative` |
 | openssl CLI | `D:\Program Files\Git\usr\bin\openssl.exe`（生成证书、TLS 验证用） |
@@ -133,11 +133,11 @@ cd build
 1. **4 个 DLL 必须与 exe 同目录**：`libcangjie-runtime.dll`、`libboundscheck.dll`、`libcrypto-3-x64.dll`、`libssl-3-x64.dll`。缺 OpenSSL 两个时**编译期无警告**，运行时才报错。
 2. **`cwd` 必须是 exe 所在目录**，否则配置与证书读不到，会出现"假失败 + 假通过"。
 3. **同包编译会撞名字**：我们与轻舟同一个 `package qingzhou`，框架已占用 `pad2`、`verifyPassword`、`randomHex`、`bodyStr` 等。加顶层函数前先查 `docs/API-NOTES.md`。
-4. **轻舟当前版本编译不过**（DEF-1），本地补丁必须保留；上游修复后要重跑 TLS 关卡。
+4. **轻舟新版的 `store.cj` / `rbac.cj` 依赖外部 CangDB**（`gitcode.com/BIT-FSSLab/CangDB` 上游只有 README、没有代码）。我们用适配版代替：`server/src/fw_rbac_store.cj`（数据层换成文件存储）+ `fw_rbac.cj`（响应用我们的错误格式），`build.ps1` 里排除框架原版。**升级轻舟后必须重跑三套测试。**
 5. **证书必须带 SAN**：现代客户端完全忽略 CN，只看 `subjectAltName`。按真实公网 IP 重签后再部署。
 6. **私钥绝不入库**：`server/certs` 与 `server/dist` 都已在 `.gitignore`；用 `git check-ignore -v <路径>` 自检。
 
-> 完整的 28 条踩坑记录（含 PowerShell 5.1 的六个坑、cjenv 切换 SDK 打断构建等）见 **`docs/API-NOTES.md` 第 3 节**。
+> 完整的 29 条踩坑记录（含 PowerShell 5.1 的六个坑、cjenv 切换 SDK 打断构建等）见 **`docs/API-NOTES.md` 第 3 节**。
 
 ---
 
@@ -146,7 +146,7 @@ cd build
 | # | 事项 | 卡住什么 |
 | --- | --- | --- |
 | 1 | **服务器步骤 0 未跑**：架构是否 x64、公网 IP、可用端口、防火墙 + 云安全组 | 卡 M5 的公网部署验证 |
-| 2 | 轻舟 DEF-1 上游未修 | 本地补丁顶着；修好后要重新验证 TLS |
+| 2 | **CangDB 上游无代码**（老师给的仓库只有 README）：轻舟新版的 RBAC 数据层用不了 | 已用文件存储的适配版顶上（`fw_rbac_store.cj`）；拿到可用 CangDB 后替换回上游实现 |
 | 3 | 给轻舟的需求文档已更正（去掉 Linux 前提） | 需补发一份更正 |
 | 4 | 忘记密码：v1 由会长重置，不做自助找回 | 已定 |
 | 5 | 服务器可用期限、备份交接人（至少两人） | 需向老师确认 |

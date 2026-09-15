@@ -46,8 +46,16 @@ $libs = (Get-ChildItem "$Stdx\libstdx*.a" | ForEach-Object { "-l:$($_.Name)" })
 
 # 排除框架自己的入口与测试：main.cj 有 main()、unit_tests.cj / manual_runner.cj 是框架自测，
 # 我们的 main.cj 提供入口。这与上层 cangjie-upstream\qingzhou-tls-verification.md 里编译 examples/https.cj 的命令一致。
+#
+# store.cj / rbac.cj（2026-09-14，轻舟升级到 3ea387e 后新增）：上游这两张文件依赖外部 CangDB，
+# 而 CangDB 的仓库只有 README、没有任何代码，`import cangdb.*` 编译不过。
+# 我们用自己的适配版代替（数据层换成文件存储、响应换用我们的错误格式）：
+#   server/src/fw_rbac_store.cj  -> RbacStore / UserRow / RoleRow / PermRow
+#   server/src/fw_rbac.cj        -> requirePermission
+# 所以这里要排除框架原版，否则 RbacStore 会重名冲突。拿到可用的 CangDB 后删掉那两个适配文件、
+# 把 'store.cj' / 'rbac.cj' 从这个列表里去掉即可回到上游实现。
 $fw = Get-ChildItem "$QingZhou\src\*.cj" |
-      Where-Object { $_.Name -notin @('main.cj', 'unit_tests.cj', 'manual_runner.cj') } |
+      Where-Object { $_.Name -notin @('main.cj', 'unit_tests.cj', 'manual_runner.cj', 'store.cj', 'rbac.cj') } |
       ForEach-Object { $_.FullName }
 
 $app = Get-ChildItem "$src\*.cj" | ForEach-Object { $_.FullName }

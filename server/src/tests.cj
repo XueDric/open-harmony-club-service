@@ -1247,6 +1247,67 @@ func testRegThrottle(t: TR): Unit {
     }
 }
 
+/* ===================== 轻舟 RBAC 适配层（本地适配，非上游原版） ===================== */
+
+/*
+ * 覆盖 server/src/fw_rbac_store.cj + fw_rbac.cj：轻舟升级后新增的 RBAC 数据层与授权中间件，
+ * 因 CangDB 上游无代码而由我们适配（数据层 = 文件存储、响应 = 我们的错误格式）。
+ * 这里测的是"适配后的行为与上游语义一致"，重点是**落盘往返**（换成文件存储后的关键差异）。
+ */
+func testRbacAdaptation(t: TR): Unit {
+    println("- 轻舟 RbacStore 适配版（文件存储，无 CangDB）")
+    let dir = "test-data-rbac"
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+    let path = "${dir}/rbac.json"
+    let st = RbacStore(path)
+
+    /* 种子数据与上游一致：2 个角色、6 个权限、2 个账号 */
+    t.eqi("角色数=2", st.listRoles().size, 2)
+    t.eqi("权限数=6", st.listPermissions().size, 6)
+    t.eqi("用户数=2", st.listUsers().size, 2)
+    t.eqs("角色名 admin", st.roleNameOf(1), "admin")
+    t.eqs("不存在的角色名=空", st.roleNameOf(99), "")
+
+    /* RBAC 链：用户 -> 角色 -> 权限（分步查询 + 应用层组合，与上游同口径） */
+    t.ok("admin 有 user:list", st.hasPermission(1, "user:list"))
+    t.ok("admin 有 dashboard:view", st.hasPermission(1, "dashboard:view"))
+    t.ok("user 没有 user:list", !st.hasPermission(2, "user:list"))
+    t.ok("user 有 dashboard:view", st.hasPermission(2, "dashboard:view"))
+    t.eqi("admin 权限码 6 个", st.permissionCodesOf(1).size, 6)
+    t.eqi("user 权限码 1 个", st.permissionCodesOf(2).size, 1)
+    t.ok("不存在的用户无权限", !st.hasPermission(99, "user:list"))
+
+    match (st.findUserByUsername("admin")) {
+        case Some(u) => t.eqi("admin 的角色 id", u.roleId, 1)
+        case None => t.ok("admin 存在", false)
+    }
+    t.ok("不存在的用户名 -> None", st.findUserByUsername("nobody").isNone())
+    t.ok("按 id 查得到", st.findUserById(2).isSome())
+
+    /* 落盘往返：换成文件存储后最关键的一条 —— 重开后数据必须还在 */
+    let newId = st.createUser("tester", hashPassword("pw123456", "salt", 10), 2)
+    t.ok("新用户 id 递增", newId > 2)
+    st.close()
+
+    let st2 = RbacStore(path)
+    t.ok("重开后新用户还在", st2.findUserByUsername("tester").isSome())
+    t.eqi("重开后用户数=3", st2.listUsers().size, 3)
+    t.ok("重开后权限仍然正确", st2.hasPermission(1, "user:delete"))
+    t.ok("删除用户返回 true", st2.deleteUser(newId))
+    t.ok("重复删除返回 false", !st2.deleteUser(newId))
+    st2.close()
+
+    let st3 = RbacStore(path)
+    t.eqi("删除后用户数=2", st3.listUsers().size, 2)
+    st3.close()
+
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+}
+
 /* ===================== 入口 ===================== */
 
 public func runTests(): Int64 {
@@ -1259,6 +1320,7 @@ public func runTests(): Int64 {
     testStore(t)
     testPerms(t)
     testRegThrottle(t)
+    testRbacAdaptation(t)
     testViews(t)
     testPart3Views(t)
     testPaging(t)
