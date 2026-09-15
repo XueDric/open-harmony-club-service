@@ -121,6 +121,18 @@ public class Store {
     public let dir: String
     public let lock: Mutex = Mutex()
 
+    /*
+     * 动作 4（2026-09-15）：写盘专用锁。与 lock 分开，否则**整库磁盘 IO** 会占住全局锁。
+     * 加锁顺序恒为 `lock → save_lock`（先取全局锁改内存/取快照，解锁后再取 save_lock 写盘），
+     * 不存在反向获取，因此不会死锁。
+     */
+    public let save_lock: Mutex = Mutex()
+    /* 提交序号（在 lock 内自增）与已落盘序号（在 save_lock 内更新）：并发写盘收敛到最新快照 */
+    public var seq: Int64 = 0
+    public var saved_seq: Int64 = 0
+    /* 待落盘快照：storeSave 在锁内挂上，snapshotFlush 中间件在解锁后写出去（见 flushPending） */
+    public var pending: ?Snapshot = None
+
     public var departments: HashMap<Int64, Department> = HashMap<Int64, Department>()
     public var members: HashMap<Int64, Member> = HashMap<Int64, Member>()
     public var plans: HashMap<Int64, Plan> = HashMap<Int64, Plan>()
@@ -565,18 +577,136 @@ func idemArrFromJson(o: JsonObject, key: String): HashMap<String, IdemRecord> {
     return m
 }
 
+/* ===================== 落盘：序列化在锁内、写盘在锁外（动作 4） ===================== */
+
+/* 一次变更的快照：text = 完整 db.json 内容，seq = 提交序号。 */
+public class Snapshot {
+    public var text: String = ""
+    public var seq: Int64 = 0
+
+    public init() {}
+}
+
 /*
- * 原子落盘：写 tmp → 备份旧文件 → rename 覆盖。
- * 任何一步失败都抛异常（宁可让调用方看到错误，也不要"看起来保存成功了"）。
+ * 在**锁内**取一致快照：把当前 Store 渲染成 db.json 内容，并自增提交序号。
+ * ⚠ 调用方必须已持 `s.lock`，否则快照可能跨表不一致（"任务存了、别的没存"）。
  *
- * L-7 已知取舍（记录在案，v1 不改）：本函数在全局锁 s.lock 内被调用，
- * 于是**一次磁盘写出横跨整个互斥区**，所有并发请求在这段时间里排队。
- * 单社团规模（几十人、几百条记录）下，这一次写出只有几毫秒到几十毫秒，
- * 换来的好处是"响应 200 就意味着已落盘"这条强语义——对社团工具更重要。
- * 真要改，方向是把快照取出锁外、异步写盘，但那会引入"200 之后还可能丢"的窗口，
- * 属于 v2 的取舍，不在 v1 范围。
+ * 为什么把 storeSave 拆成两步（2026-09-15，容量基准的动作 4）：
+ *   原先 storeSave 在全局锁里做**整库磁盘 IO** —— 写 .tmp、把旧文件复制成 .bak、
+ *   rename，合计约 **3 倍文件大小**的 IO。实测：1000 人 2.51 MB → 单次写占锁 56 ms；
+ *   3000 人 7.55 MB → 124 ms，而这段时间**所有请求都在排队**。
+ *   现在只有"序列化"留在锁内（几毫秒到十几毫秒），IO 挪到锁外由 save_lock 串行。
+ *
+ * 语义没有变：调用方仍然是"先 writeSnapshot、再响应"，所以
+ * **响应 200 依旧代表已落盘** —— 这条强语义正是 L-7 当初把 IO 放进锁里的理由，
+ * 本次只是把 IO 挪出锁，而不是放弃它。
+ */
+public func storeSnapshot(s: Store): Snapshot {
+    let snap = Snapshot()
+    snap.text = renderDb(s)
+    s.seq += 1
+    snap.seq = s.seq
+    return snap
+}
+
+/*
+ * 在**锁外**写盘。并发写盘由 s.save_lock 串行，序号守卫保证"新快照不会被旧快照覆盖"：
+ *   A(seq5) 与 B(seq6) 并发，无论谁先拿到 save_lock 都收敛到 seq6 ——
+ *   A 先写(5)、B 后写(6) ✓；B 先写(6)、A 发现 5 <= saved_seq 直接跳过 ✓
+ *   （seq6 的快照是在 s.lock 内取的，必然已包含 A 的变更，跳过不会丢数据）
+ *   → 而且两者都会在返回前看到"磁盘上已有不低于自己的版本"，与 storeSave 的旧语义等价。
+ */
+public func writeSnapshot(s: Store, snap: Snapshot): Unit {
+    if (snap.text.size == 0) {
+        return
+    }
+    s.save_lock.lock()
+    try {
+        if (snap.seq <= s.saved_seq) {
+            return
+        }
+        writeDbFile(s, snap.text)
+        s.saved_seq = snap.seq
+    } finally {
+        s.save_lock.unlock()
+    }
+}
+
+/*
+ * 提交一次变更（**在锁内调用**）：把当前状态序列化成快照挂到 `s.pending`，**不碰磁盘**。
+ * 真正的写盘由请求链末端的 `snapshotFlush` 中间件在**解锁之后**完成（见 flushPending）。
+ *
+ * 于是全局锁只承担"序列化"（几毫秒到十几毫秒），不再承担整库 IO
+ * （实测 1000 人 2.51 MB 时单次写占锁 56 ms、3000 人 7.55 MB 时 124 ms）。
+ *
+ * ⚠ 语义没有降低：`snapshotFlush` 跑在 `ctx.commit()` **之前**，所以
+ *   **响应 200 依旧代表数据已经写在磁盘上** —— 这正是 L-7 当初把 IO 放进锁里的理由。
+ * ⚠ 若 handler 抛异常，`next()` 不会返回、pending 不落盘 —— 与改造前一致
+ *   （旧代码抛异常时也执行不到 storeSave 那一行）。
  */
 public func storeSave(s: Store): Unit {
+    let snap = storeSnapshot(s)
+    s.save_lock.lock()
+    try {
+        s.pending = Some(snap)
+    } finally {
+        s.save_lock.unlock()
+    }
+}
+
+/*
+ * 同步落盘：给**不在 HTTP 请求里**的调用方用（`init-admin`、单测）。
+ * 请求里的 handler 用 storeSave 即可，不要用这个（会重新把 IO 放回锁内）。
+ */
+public func storeSaveNow(s: Store): Unit {
+    writeSnapshot(s, storeSnapshot(s))
+}
+
+/* 把待落盘快照写出去（幂等）：没有待写快照时是空操作。 */
+public func flushPending(s: Store): Unit {
+    var take: ?Snapshot = None
+    s.save_lock.lock()
+    try {
+        take = s.pending
+        s.pending = None
+    } finally {
+        s.save_lock.unlock()
+    }
+    match (take) {
+        case Some(x) => writeSnapshot(s, x)
+        case None => ()
+    }
+}
+
+/*
+ * 请求链上的刷盘中间件。**必须挂在 router 之前**：
+ * 这样 `next()` 返回时 handler 已经跑完并解锁（我们的 handler 不调用 next），
+ * 而整条链仍在 `ctx.commit()` 之前 —— 顺序是「改内存 → 解锁 → 写盘 → 发响应」。
+ */
+public func snapshotFlush(s: Store): Middleware {
+    return { ctx: Context, next: () -> Unit =>
+        next()
+        flushPending(s)
+    }
+}
+
+/* 真正的文件写入：写 .tmp → 备份旧文件 → rename 覆盖。 */
+func writeDbFile(s: Store, text: String): Unit {
+    /* 注意：Cangjie 的 Directory.create 在目录已存在时**照样抛异常**
+     * （即使 recursive: true），必须先判断存在性，否则第二次落盘就会崩。 */
+    if (!exists(s.dir)) {
+        Directory.create(s.dir, recursive: true)
+    }
+    let tmp = s.dbFile() + ".tmp"
+    File.writeTo(tmp, text.toArray())
+    if (exists(s.dbFile())) {
+        File.writeTo(s.dbFile() + ".bak", File.readFrom(s.dbFile()))
+    }
+    rename(tmp, to: s.dbFile(), overwrite: true)
+}
+
+/* 把整个 Store 渲染成 db.json 的文本（不碰磁盘）。 */
+func renderDb(s: Store): String {
     let root = JsonObject()
     root.put("version", JsonInt(1))
     jPutInt(root, "next_dept", s.next_dept)
@@ -625,7 +755,7 @@ public func storeSave(s: Store): Unit {
     }
     root.put("tokens", toks)
 
-    /* login_fail 不落盘（P1 M-3），见 Store 字段上的注释。 */
+    /* login_fail / reg_fail 不落盘（P1 M-3 / N-6），见 Store 字段上的注释。 */
 
     let idems = JsonArray()
     for ((k, r) in s.idem) {
@@ -633,18 +763,7 @@ public func storeSave(s: Store): Unit {
     }
     root.put("idem", idems)
 
-    let text = root.toString()
-    /* 注意：Cangjie 的 Directory.create 在目录已存在时**照样抛异常**
-     * （即使 recursive: true），必须先判断存在性，否则第二次落盘就会崩。 */
-    if (!exists(s.dir)) {
-        Directory.create(s.dir, recursive: true)
-    }
-    let tmp = s.dbFile() + ".tmp"
-    File.writeTo(tmp, text.toArray())
-    if (exists(s.dbFile())) {
-        File.writeTo(s.dbFile() + ".bak", File.readFrom(s.dbFile()))
-    }
-    rename(tmp, to: s.dbFile(), overwrite: true)
+    return root.toString()
 }
 
 /* ===================== 查询辅助 ===================== */
@@ -697,19 +816,67 @@ public func pendingMembers(s: Store): Array<Member> {
     return arr
 }
 
-/* 按 Int64 键做插入排序。社团规模（几十~几百条），够用且无额外依赖。 */
+/*
+ * 按 Int64 键排序：**原地堆排序 O(n log n)**。
+ *
+ * 2026-09-15 替换原先的插入排序。为什么必须换（见 docs/capacity-baseline.md 的实测）：
+ * 这里排的不是"几十条"，而是**某个用户能看见的全部任务 / 成员**——会长看得见全社团。
+ * 插入排序是 O(n²)，实测：
+ *     可见任务  8000 个 → GET /tasks 168 ms
+ *     可见任务 24000 个 → GET /tasks **1017 ms**（数据涨 3 倍，延迟涨 6 倍 = 平方项）
+ * 换堆排序后回到同一量级下几十毫秒。
+ *
+ * 为什么自己写而不用 std.sort：本项目只用**已实测过**的标准库入口（docs/API-NOTES.md 开头的纪律）。
+ * 堆排序原地、零额外分配、不引入新 API。
+ *
+ * 稳定性：堆排序不稳定。但所有调用点的键都含唯一 id（如 `due_at * 1000 + id`），
+ * 键互不相同，稳定与否不影响结果。
+ */
 func sortByKey<T>(arr: Array<T>, key: (T) -> Int64): Unit {
-    var i: Int64 = 1
-    while (i < arr.size) {
-        let cur = arr[i]
-        let ck = key(cur)
-        var j: Int64 = i - 1
-        while (j >= 0 && key(arr[j]) > ck) {
-            arr[j + 1] = arr[j]
-            j -= 1
+    let n = arr.size
+    if (n < 2) {
+        return
+    }
+    /* 1) 建大顶堆：从最后一个非叶节点起逐个下沉 */
+    var i = n / 2 - 1
+    while (i >= 0) {
+        siftDown<T>(arr, i, n, key)
+        i -= 1
+    }
+    /* 2) 反复把堆顶（当前最大）换到末尾，再对缩小后的堆下沉 */
+    var end = n - 1
+    while (end > 0) {
+        let tmp = arr[0]
+        arr[0] = arr[end]
+        arr[end] = tmp
+        siftDown<T>(arr, 0, end, key)
+        end -= 1
+    }
+}
+
+/* 把 root0 处的元素在 [0, end) 范围内下沉到正确位置。 */
+func siftDown<T>(arr: Array<T>, root0: Int64, end: Int64, key: (T) -> Int64): Unit {
+    var root = root0
+    var go = true
+    while (go) {
+        let left = root * 2 + 1
+        if (left >= end) {
+            go = false
+        } else {
+            var pick = left
+            let right = left + 1
+            if (right < end && key(arr[left]) < key(arr[right])) {
+                pick = right
+            }
+            if (key(arr[root]) < key(arr[pick])) {
+                let tmp = arr[root]
+                arr[root] = arr[pick]
+                arr[pick] = tmp
+                root = pick
+            } else {
+                go = false
+            }
         }
-        arr[j + 1] = cur
-        i += 1
     }
 }
 

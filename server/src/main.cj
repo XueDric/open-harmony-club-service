@@ -125,7 +125,8 @@ func cmdInitAdmin(phone: String, pw: String, dir: String): Int64 {
             s.register_code_by = m.id
             s.register_code_at = now
         }
-        storeSave(s)
+        /* 命令行路径，不在 HTTP 请求里，没有刷盘中间件可依赖 → 用同步落盘。 */
+        storeSaveNow(s)
 
         println("已创建首任会长：${phone}（成员 id=${m.id}，部门=${m.dept_id}）")
         println("当前注册口令：${s.register_code}")
@@ -314,6 +315,12 @@ func buildApp(s: Store, box: HandleBox): QingZhouApp {
      * 即便如此也要说清楚它的能力边界（读 timeout.cj 的实现）：它是"事后软超时"，
      * 只能在 handler 返回后判断是否超时，**无法中断**已经跑起来的同步 handler。
      * 真正的防线是 handler 里不做慢操作；这一层是给将来不留神写出的慢路径兜底。
+     *
+     * 中间件顺序说明 2（容量基准动作 4）：snapshotFlush 也**必须**在 router 之前。
+     *   顺序是「handler 改内存 → finally 解锁 → 本中间件写盘 → dispatch 返回 → ctx.commit() 发响应」。
+     *   写盘因此落在锁外（不再阻塞其他请求），又仍然早于响应 ——
+     *   「响应 200 ⇒ 数据已落盘」这条语义没有打折，见 store.cj 的 storeSave/flushPending。
+     *   它同时兼顾了"没命中路由/没改数据"的请求：此时 pending 为空，flushPending 是空操作。
      */
     return QingZhouApp()
         .use(requestId())
@@ -321,6 +328,7 @@ func buildApp(s: Store, box: HandleBox): QingZhouApp {
         .use(bodyParser())
         .use(cors())
         .use(timeout(15000))
+        .use(snapshotFlush(s))
         .use(router.middleware())
         .onError(errHandler)
 }

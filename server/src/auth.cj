@@ -108,9 +108,34 @@ public func bearerToken(ctx: Context): ?String {
     }
 }
 
+/*
+ * 回收已过期令牌（2026-09-15，容量基准的动作 3）。
+ *
+ * 原先只有"某个**已过期**令牌被再次使用"时才会被删（requireMember 里那一处），
+ * 用户不再登录就永远留着 —— 于是 tokens 表**只增不减**，
+ * 而每次写都会把它整表序列化进 db.json。实测 1500 条 ≈ 165 KB，1200 人社团一学期
+ * 累积上万条很现实，那会让**每一次写盘**都多背几百 KB。
+ *
+ * 这里在**签发令牌时顺手回收一次**（低频、O(n) 一趟），把表压回"活跃会话"量级。
+ */
+public func pruneTokens(s: Store, now: Int64): Int64 {
+    let doomed = ArrayList<String>()
+    for ((k, r) in s.tokens) {
+        if (r.expires_at <= now) {
+            doomed.add(k)
+        }
+    }
+    for (k in doomed) {
+        s.tokens.remove(k)
+    }
+    return doomed.size
+}
+
 public func issueToken(s: Store, memberId: Int64): (String, Int64) {
     let tok = newToken()
     let now = nowEpoch()
+    /* 顺手回收过期令牌（动作 3）；调用方都持锁，见各 handler 的注释 */
+    pruneTokens(s, now)
     let rec = TokenRecord()
     rec.member_id = memberId
     rec.created_at = now

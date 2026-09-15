@@ -150,6 +150,8 @@ public func handleRegister(ctx: Context, s: Store): Unit {
 
     let deptHint = reqIntOr(body, "dept_id", 0)
 
+    /* ---------- ① 锁内（极短）：口令存在性 + 按 IP 限流；只把口令拷出来 ---------- */
+    var expectedCode = ""
     s.lock.lock()
     try {
         if (s.register_code.size == 0) {
@@ -173,11 +175,29 @@ public func handleRegister(ctx: Context, s: Store): Unit {
         if (regLocked(s, ip, nowEpoch())) {
             throw apiErr("TOO_MANY_ATTEMPTS")
         }
-        if (!constantTimeEq(rc, s.register_code)) {
-            regFailBump(s, ip)
-            throw apiErr("REGISTER_CODE_INVALID")
+        expectedCode = s.register_code
+    } finally {
+        s.lock.unlock()
+    }
+
+    /* ---------- ② 锁外：口令比对 + PBKDF2（动作 2：这段 CPU 不占锁） ---------- */
+    if (!constantTimeEq(rc, expectedCode)) {
+        /* 失败记账要单独加一次锁（表在内存，不落盘） */
+        s.lock.lock()
+        try {
+            regFailBump(s, clientIpOf(ctx))
+        } finally {
+            s.lock.unlock()
         }
-        s.reg_fail.remove(ip)
+        throw apiErr("REGISTER_CODE_INVALID")
+    }
+    let rec = newPasswordRecord(pw)
+
+    /* ---------- ③ 锁内：清限流 + 复核手机号未被抢注 + 建账号 + 发令牌 ---------- */
+    s.lock.lock()
+    try {
+        s.reg_fail.remove(clientIpOf(ctx))
+        /* 锁外那段时间里，同一手机号可能已被别人注册成功 —— 复核一次 */
         if (memberByPhone(s, phone).isSome()) {
             throw apiErrFields("ALREADY_EXISTS", "该手机号已注册", oneField("phone", "该手机号已注册"))
         }
@@ -186,7 +206,6 @@ public func handleRegister(ctx: Context, s: Store): Unit {
         s.next_member += 1
         m.name = name
         m.phone = phone
-        let rec = newPasswordRecord(pw)
         m.pw_salt = rec[0]
         m.pw_hash = rec[1]
         m.pw_iter = rec[2]
@@ -220,6 +239,22 @@ public func handleRegister(ctx: Context, s: Store): Unit {
  *      只留在内存：重启后清零可以接受（攻击者无法让服务重启），
  *      但绝不能每次都拿它去写整库。
  */
+/*
+ * 三阶段加锁（2026-09-15，容量基准的动作 2）。
+ *
+ * 为什么改：PBKDF2 一次 10 万轮，实测 **~400 ms**，而它原先是在**全局锁里**跑的
+ * （`s.lock.lock()` → `verifyPw` → `storeSave` → 响应）。后果是一次登录把整个服务
+ * 卡住 0.4 s，登录只能串行 ≈ 2 次/秒 —— 千人社团招新期会明显排队。
+ * 这不是存储的锅，是"锁里做 CPU 密集活"。
+ *
+ * 现在拆成三段：
+ *   ① 锁内（极短）：限流判定 + 把该手机号的口令材料**拷成标量**带出锁
+ *   ② 锁外：`verifyPw`（最贵的 CPU，不再占锁）
+ *   ③ 锁内（短）：记失败账 / 复核 `pw_hash` 未被并发改过 / 签令牌 / 落盘
+ *
+ * ⚠ 纪律：**不能把 `Member` 引用带出锁外使用**（会被并发修改）。这里只拷
+ * `pw_salt / pw_hash / pw_iter` 与 `id` 四个标量；第 ③ 段重新按 id 取成员并复核。
+ */
 public func handleLogin(ctx: Context, s: Store): Unit {
     let body = reqObj(ctx)
     let v = V()
@@ -230,32 +265,49 @@ public func handleLogin(ctx: Context, s: Store): Unit {
     }
     v.done()
 
+    /* ---------- ① 锁内：限流判定 + 取口令材料 ---------- */
+    var credSalt = ""
+    var credHash = ""
+    var credIter: Int64 = 0
+    var memberId: Int64 = 0
+    var found = false
     s.lock.lock()
     try {
         let now = nowEpoch()
-        var lf = s.login_fail.get(phone) ?? LoginFail()
+        let lf = s.login_fail.get(phone) ?? LoginFail()
         if (lf.locked_until > now) {
             throw apiErr("TOO_MANY_ATTEMPTS")
         }
-        if (now - lf.first_at > LOGIN_FAIL_WINDOW) {
-            lf.count = 0
-            lf.first_at = now
-        }
-
-        let found = memberByPhone(s, phone)
-        var bad = false
-        var target: ?Member = None
-        match (found) {
+        match (memberByPhone(s, phone)) {
             case Some(m) =>
-                if (verifyPw(pw, m.pw_salt, m.pw_hash, m.pw_iter)) {
-                    target = Some(m)
-                } else {
-                    bad = true
-                }
-            case None => bad = true
+                credSalt = m.pw_salt
+                credHash = m.pw_hash
+                credIter = m.pw_iter
+                memberId = m.id
+                found = true
+            case None => ()
         }
+    } finally {
+        s.lock.unlock()
+    }
 
-        if (bad) {
+    /* ---------- ② 锁外：口令校验（~400 ms CPU，不占锁） ---------- */
+    var ok = false
+    if (found) {
+        ok = verifyPw(pw, credSalt, credHash, credIter)
+    }
+
+    /* ---------- ③ 锁内：记账 / 复核 / 签发 ---------- */
+    s.lock.lock()
+    try {
+        if (!ok) {
+            /* 手机号不存在与口令错误走同一条路：不泄露某个号码是否注册过 */
+            let now = nowEpoch()
+            var lf = s.login_fail.get(phone) ?? LoginFail()
+            if (now - lf.first_at > LOGIN_FAIL_WINDOW) {
+                lf.count = 0
+                lf.first_at = now
+            }
             lf.count += 1
             if (lf.count >= LOGIN_FAIL_LIMIT) {
                 lf.locked_until = now + LOGIN_FAIL_LOCK
@@ -268,17 +320,21 @@ public func handleLogin(ctx: Context, s: Store): Unit {
             throw apiErr("AUTH_BAD_CREDENTIALS")
         }
 
-        match (target) {
-            case Some(m) =>
-                if (m.status == "disabled") {
-                    throw apiErr("MEMBER_DISABLED")
-                }
-                s.login_fail.remove(phone)
-                let issued = issueToken(s, m.id)
-                storeSave(s)
-                respondLogin(ctx, s, m, issued[0], issued[1], false)
+        /* 锁外那段时间里账号可能被改密 / 移出 / 删除 —— 复核后才签发 */
+        let m = match (s.members.get(memberId)) {
+            case Some(x) => x
             case None => throw apiErr("AUTH_BAD_CREDENTIALS")
         }
+        if (m.pw_hash != credHash) {
+            throw apiErr("AUTH_BAD_CREDENTIALS")
+        }
+        if (m.status == "disabled") {
+            throw apiErr("MEMBER_DISABLED")
+        }
+        s.login_fail.remove(phone)
+        let issued = issueToken(s, m.id)
+        storeSave(s)
+        respondLogin(ctx, s, m, issued[0], issued[1], false)
     } finally {
         s.lock.unlock()
     }
@@ -326,15 +382,45 @@ public func handleChangePassword(ctx: Context, s: Store): Unit {
     }
     v.done()
 
+    /*
+     * 三段式（动作 2）：验旧口令与算新口令**都是** PBKDF2（两次约 800 ms），
+     * 原先全在锁里 → 一次改密把全服卡 0.8 s。现在只把标量拷出锁。
+     */
+    var curSalt = ""
+    var curHash = ""
+    var curIter: Int64 = 0
     s.lock.lock()
     try {
-        if (!verifyPw(oldPw, m.pw_salt, m.pw_hash, m.pw_iter)) {
+        let cur = match (s.members.get(m.id)) {
+            case Some(x) => x
+            case None => throw apiErr("AUTH_REQUIRED")
+        }
+        curSalt = cur.pw_salt
+        curHash = cur.pw_hash
+        curIter = cur.pw_iter
+    } finally {
+        s.lock.unlock()
+    }
+
+    /* 锁外：**先验旧口令**，验过了才算新口令 —— 失败时只花一次 PBKDF2，不给放大杠杆 */
+    if (!verifyPw(oldPw, curSalt, curHash, curIter)) {
+        throw apiErr("AUTH_BAD_CREDENTIALS")
+    }
+    let rec = newPasswordRecord(newPw)
+
+    s.lock.lock()
+    try {
+        let cur = match (s.members.get(m.id)) {
+            case Some(x) => x
+            case None => throw apiErr("AUTH_REQUIRED")
+        }
+        /* 锁外那段时间里口令可能已被改过（例如管理员重置）—— 复核，别用旧凭据覆盖新口令 */
+        if (cur.pw_hash != curHash) {
             throw apiErr("AUTH_BAD_CREDENTIALS")
         }
-        let rec = newPasswordRecord(newPw)
-        m.pw_salt = rec[0]
-        m.pw_hash = rec[1]
-        m.pw_iter = rec[2]
+        cur.pw_salt = rec[0]
+        cur.pw_hash = rec[1]
+        cur.pw_iter = rec[2]
         revokeOtherTokens(s, m.id, tok)
         storeSave(s)
     } finally {

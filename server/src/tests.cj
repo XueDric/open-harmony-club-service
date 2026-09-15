@@ -261,7 +261,7 @@ func testStore(t: TR): Unit {
     s.register_code = "K3M9P2"
     s.register_code_by = 1
 
-    storeSave(s)
+    storeSaveNow(s)
 
     t.ok("db.json 已生成", exists(s.dbFile()))
     t.ok("tmp 已清理", !exists(s.dbFile() + ".tmp"))
@@ -299,7 +299,7 @@ func testStore(t: TR): Unit {
     t.eqi("next_member 往返", l.next_member, 2)
 
     /* 备份文件：**第二次保存**时才会生成（第一次没有旧库可备份） */
-    storeSave(s)
+    storeSaveNow(s)
     t.ok("bak 已生成（第二次保存）", exists(s.dbFile() + ".bak"))
 
     /* 坏库：必须报错，绝不静默降级为空库（否则下次保存会覆盖真实数据） */
@@ -319,7 +319,7 @@ func testStore(t: TR): Unit {
      * 这里手写一个"数组里混了一个字符串"的库，要求 storeLoad 直接拒绝启动。
      */
     let good = storeLoad(dir + "-m7")
-    storeSave(good) /* 先建出目录，再用坏内容覆盖 db.json */
+    storeSaveNow(good) /* 先建出目录，再用坏内容覆盖 db.json */
     let badJson = "{\"version\":1,\"departments\":[\"这不是一个部门对象\",{\"id\":1,\"name\":\"课题部\",\"sort\":0}],\"members\":[]}"
     File.writeTo(good.dbFile(), badJson.toArray())
     var threw2 = false
@@ -337,7 +337,7 @@ func testStore(t: TR): Unit {
      */
     let idemDir = dir + "-n5"
     let goodIdem = storeLoad(idemDir)
-    storeSave(goodIdem) /* 先建出目录，再用坏内容覆盖 db.json */
+    storeSaveNow(goodIdem) /* 先建出目录，再用坏内容覆盖 db.json */
     let badIdem = "{\"version\":1,\"departments\":[],\"members\":[],\"idem\":[\"这不是一个幂等记录\"]}"
     File.writeTo(goodIdem.dbFile(), badIdem.toArray())
     var threw3 = false
@@ -353,7 +353,7 @@ func testStore(t: TR): Unit {
     lf.count = 3
     lf.first_at = 1789898400
     s.login_fail["13800000000"] = lf
-    storeSave(s)
+    storeSaveNow(s)
     let after = String.fromUtf8(File.readFrom(s.dbFile()))
     t.ok("login_fail 不落盘（M-3）", !containsAscii(after, "login_fail"))
     /* 但内存里仍然有效（限流照常工作） */
@@ -1308,6 +1308,180 @@ func testRbacAdaptation(t: TR): Unit {
     }
 }
 
+/*
+ * 容量基准动作 4：storeSave 只在锁内取快照，写盘由 snapshotFlush 中间件在锁外完成。
+ * 这里直接验证这条两段式契约本身（HTTP 层的端到端验证在冒烟测试 [24] 重启持久性里）：
+ *   · storeSave 之后磁盘上**还没有**新数据 → 证明整库 IO 确实不在锁内那一段
+ *   · pending 里已有完整快照，flushPending 之后磁盘上就有了
+ *   · 没有待写快照时 flushPending 是空操作（幂等）
+ *   · 序号守卫：并发写盘收敛到最新版本，旧快照不会覆盖新快照
+ */
+func testDeferredSave(t: TR): Unit {
+    println("- store 动作4：快照在锁内、写盘在锁外")
+    let dir = "build/test-data-deferred"
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+    let s = Store(dir)
+
+    let d = Department()
+    d.id = 1
+    d.name = "秘书处"
+    s.departments[1] = d
+
+    /* 第一段：锁内只取快照 —— 磁盘上不该有任何东西 */
+    storeSave(s)
+    t.ok("storeSave 后 pending 里有快照", s.pending.isSome())
+    t.ok("storeSave 后**还没写盘**（IO 已移出锁内那一段）", !exists(s.dbFile()))
+
+    /* 第二段：锁外写盘 */
+    flushPending(s)
+    t.ok("flushPending 后 db.json 已生成", exists(s.dbFile()))
+    t.ok("flushPending 清空 pending", s.pending.isNone())
+    let text = String.fromUtf8(File.readFrom(s.dbFile()))
+    t.ok("落盘内容含本次变更", containsAscii(text, "秘书处"))
+
+    /* 幂等：没有待写快照时是空操作，不碰文件 */
+    flushPending(s)
+    t.eqs("无待写快照时 flushPending 不改文件", String.fromUtf8(File.readFrom(s.dbFile())), text)
+    t.ok("tmp 已清理", !exists(s.dbFile() + ".tmp"))
+
+    /* 序号守卫：拿旧快照后写，不能把更新的版本覆盖回去 */
+    let oldSnap = storeSnapshot(s)
+    let newSnap = storeSnapshot(s)
+    writeSnapshot(s, newSnap)
+    writeSnapshot(s, oldSnap)
+    t.eqi("旧快照被序号守卫拦住（saved_seq 不倒退）", s.saved_seq, newSnap.seq)
+    t.ok("seq 单调递增", newSnap.seq > oldSnap.seq)
+
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+}
+
+/*
+ * 容量基准动作 3：签发令牌时顺手回收过期令牌（auth.cj 的 pruneTokens）。
+ * 回归点：原先 tokens 表**只增不减**（只有"某个已过期令牌被再次使用"才会删掉它），
+ * 用户不再登录就永远留着，而每次写盘都要把整表序列化进 db.json。
+ */
+func testTokenPrune(t: TR): Unit {
+    println("- auth 令牌回收（动作3）")
+    let dir = "build/test-data-prune"
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+    let s = Store(dir)
+    let now: Int64 = 1789898400
+    /* 用 2286 年当"永不过期"，避免测试依赖真实时钟（issueToken 内部会取 nowEpoch） */
+    let far = 9999999999999
+
+    for (i in 1..=3) {
+        let r = TokenRecord()
+        r.member_id = 1
+        r.created_at = now - 100000
+        r.expires_at = now - i
+        s.tokens["expired-${i}"] = r
+    }
+    for (i in 1..=2) {
+        let r = TokenRecord()
+        r.member_id = 1
+        r.created_at = now
+        r.expires_at = far
+        s.tokens["live-${i}"] = r
+    }
+
+    t.eqi("回收前 5 条", s.tokens.size, 5)
+    t.eqi("回收了 3 条过期令牌", pruneTokens(s, now), 3)
+    t.eqi("剩下 2 条活跃令牌", s.tokens.size, 2)
+    t.ok("过期令牌已删除", !s.tokens.contains("expired-1"))
+    t.ok("活跃令牌保留", s.tokens.contains("live-1"))
+
+    /* 没有过期令牌时是空操作 */
+    t.eqi("无过期令牌时返回 0", pruneTokens(s, now), 0)
+    t.eqi("无过期令牌时表大小不变", s.tokens.size, 2)
+
+    /* 真正的调用点：issueToken 会顺手回收（1970 年到期，任何真实时钟下都算过期） */
+    let dead = TokenRecord()
+    dead.member_id = 1
+    dead.created_at = 1
+    dead.expires_at = 1
+    s.tokens["expired-later"] = dead
+    let issued = issueToken(s, 7)
+    t.ok("新令牌已签发", s.tokens.contains(issued[0]))
+    t.ok("issueToken 顺手回收了过期令牌", !s.tokens.contains("expired-later"))
+    t.eqi("表大小 = 2 活跃 + 1 新", s.tokens.size, 3)
+
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+}
+
+/*
+ * 容量基准动作 1：sortByKey 由插入排序换成堆排序（store.cj）。
+ * 复杂度是性能属性、不适合在单测里断言时间；这里守住的是**换实现不能换语义**：
+ * 逆序输入、同键输入、单元素、空数组四个边界。
+ */
+func testSortEdge(t: TR): Unit {
+    println("- sort 堆排序边界（动作1）")
+    let n = 500
+    let arr = ArrayList<Task>()
+    var i = n
+    while (i > 0) {
+        let x = Task()
+        x.id = i
+        x.title = "T${i}"
+        /* 确定性乱序：7919 与 100000 互质，键与 id 顺序完全错开 */
+        x.due_at = (i * 7919) % 100000
+        arr.add(x)
+        i -= 1
+    }
+    let out = sortedTasksByDue(arr)
+    t.eqi("元素一个不少", out.size, n)
+    var ordered = true
+    var j = 1
+    while (j < out.size) {
+        if (out[j - 1].due_at > out[j].due_at) {
+            ordered = false
+        }
+        j += 1
+    }
+    t.ok("500 条乱序输入排成升序", ordered)
+    /* 键含 id，同 due_at 也必须是全序（不会因不稳定而乱） */
+    var strict = true
+    j = 1
+    while (j < out.size) {
+        if (out[j - 1].due_at == out[j].due_at && out[j - 1].id >= out[j].id) {
+            strict = false
+        }
+        j += 1
+    }
+    t.ok("同截止时间按 id 兜底", strict)
+
+    /* 全部同键：仍然不丢元素、按 id 升序 */
+    let same = ArrayList<Task>()
+    var k: Int64 = 100
+    while (k > 0) {
+        let x = Task()
+        x.id = k
+        x.due_at = 5000
+        same.add(x)
+        k -= 1
+    }
+    let out2 = sortedTasksByDue(same)
+    t.eqi("同键元素数不变", out2.size, 100)
+    t.eqi("同键首元素是最小 id", out2[0].id, 1)
+    t.eqi("同键末元素是最大 id", out2[99].id, 100)
+
+    /* 边界：单元素 / 空数组 */
+    let one = ArrayList<Task>()
+    let only = Task()
+    only.id = 9
+    only.due_at = 1
+    one.add(only)
+    t.eqi("单元素原样返回", sortedTasksByDue(one).size, 1)
+    t.eqi("空数组返回空", sortedTasksByDue(ArrayList<Task>()).size, 0)
+}
+
 /* ===================== 入口 ===================== */
 
 public func runTests(): Int64 {
@@ -1318,6 +1492,9 @@ public func runTests(): Int64 {
     testIds(t)
     testPassword(t)
     testStore(t)
+    testDeferredSave(t)
+    testTokenPrune(t)
+    testSortEdge(t)
     testPerms(t)
     testRegThrottle(t)
     testRbacAdaptation(t)

@@ -48,6 +48,13 @@ public func handleResetPassword(ctx: Context, s: Store): Unit {
     let actor = requireActive(ctx, s)
     let id = pathIdOr(ctx, "MEMBER_NOT_FOUND")
 
+    /*
+     * 三段式（2026-09-15，容量基准的动作 2）。
+     * 原先 `newPasswordRecord`（PBKDF2 10 万轮，~400 ms）在锁里跑 —— 一次重置把全服卡 0.4 s。
+     * 现在：① 锁内先**判权限**（便宜，且能挡住"没权限的人骗 CPU"）；② 锁外算口令；
+     * ③ 锁内复核权限与目标仍存在，再落库。
+     */
+    var temp = ""
     s.lock.lock()
     try {
         let tgt = match (s.members.get(id)) {
@@ -55,8 +62,22 @@ public func handleResetPassword(ctx: Context, s: Store): Unit {
             case None => throw apiErr("MEMBER_NOT_FOUND")
         }
         requireAccess(actor, Action.ResetPassword, targetOf(actor, tgt))
-        let temp = newTempPassword()
-        let rec = newPasswordRecord(temp)
+        temp = newTempPassword()
+    } finally {
+        s.lock.unlock()
+    }
+
+    /* 锁外：PBKDF2（不占锁）。权限已经在上面判过，没权限的人走不到这里 */
+    let rec = newPasswordRecord(temp)
+
+    s.lock.lock()
+    try {
+        let tgt = match (s.members.get(id)) {
+            case Some(x) => x
+            case None => throw apiErr("MEMBER_NOT_FOUND")
+        }
+        /* 锁外那段时间里目标可能被移出/改角色 —— 复核权限（口径与第一次完全一致） */
+        requireAccess(actor, Action.ResetPassword, targetOf(actor, tgt))
         tgt.pw_salt = rec[0]
         tgt.pw_hash = rec[1]
         tgt.pw_iter = rec[2]
